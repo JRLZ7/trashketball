@@ -50,3 +50,7 @@ xcodebuild -project ios/TrashBotUWB.xcodeproj -scheme TrashBotUWB -configuration
 Builds have been checked for physical iOS and Simulator. Tests cover scoring, undo, deadline, best-score persistence, peer payload encoding, authenticated HTTP roundtrips, malformed measurements, optional bearing, game/intent data, and stale telemetry. Two-device game sync and intent acknowledgements still need physical validation; UWB distance/bearing was validated separately on your phones before this integration.
 
 Apple references: [Nearby Interaction](https://developer.apple.com/documentation/nearbyinteraction), [camera assistance and horizontal angle](https://developer.apple.com/videos/play/wwdc2022/10008/), [peer discovery](https://developer.apple.com/documentation/nearbyinteraction/discovering-peers-with-multipeer-connectivity).
+
+## Pi motor driver
+
+The teammate-maintained motor driver and wiring instructions are in [Firmware/PI/README.md](Firmware/PI/README.md). This is separate from the measurement-only receiver in `pi/`.
