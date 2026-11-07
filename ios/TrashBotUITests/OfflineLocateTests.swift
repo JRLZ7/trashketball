@@ -1,0 +1,30 @@
+import XCTest
+
+final class OfflineLocateTests: XCTestCase {
+    func testCanPhoneCanNavigateWhilePiIsUnavailable() {
+        let app = XCUIApplication()
+        // Debug-only harness sends real requests to a closed localhost port, without UWB hardware.
+        app.launchArguments = ["-role", "Robot", "--ui-test-offline-pi"]
+        app.launch()
+        for _ in 0..<3 {
+            app.tabBars.buttons["Locate"].tap()
+            XCTAssertTrue(app.staticTexts["Find the player"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["Other phone not connected"].exists)
+            app.tabBars.buttons["Connect"].tap()
+            XCTAssertTrue(app.navigationBars["Get connected"].waitForExistence(timeout: 5))
+            app.tabBars.buttons["Play"].tap()
+            XCTAssertTrue(app.staticTexts["Trashketball"].waitForExistence(timeout: 5))
+        }
+    }
+
+    func testPlayerLocateOpensWithoutConnections() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-role", "User"]
+        app.launch()
+        app.tabBars.buttons["Locate"].tap()
+        XCTAssertTrue(app.staticTexts["Find your can"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Other phone not connected"].exists)
+        app.tabBars.buttons["Play"].tap()
+        XCTAssertTrue(app.staticTexts["Trashketball"].waitForExistence(timeout: 5))
+    }
+}

@@ -16,8 +16,9 @@ struct ContentView: View {
     @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
     private let clock = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
+    private let waitingRound = RoundState()
     private var isRobot: Bool { role == "Robot" }
-    private var round: RoundState { isRobot ? model.remoteRound ?? RoundState() : game.round }
+    private var round: RoundState { isRobot ? model.remoteRound ?? waitingRound : game.round }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -131,8 +132,16 @@ struct ContentView: View {
                     let fresh = model.isFresh(at: context.date)
                     let bearing = model.bearing(at: context.date)
                     VStack(spacing: 16) {
+                        if !fresh {
+                            ContentUnavailableView(
+                                model.connected ? "Position unavailable" : "Other phone not connected",
+                                systemImage: "location.slash",
+                                description: Text(model.connected ? "Waiting for live distance and bearing. You can keep using the other tabs." : "Open Connect on both phones and connect them to locate each other.")
+                            ).frame(minHeight: 220)
+                        } else {
                         RadarView(angle: bearing, distance: fresh ? model.distance : nil, isRobot: isRobot)
                             .frame(height: 280)
+                        }
                         HStack {
                             stat("DISTANCE", fresh ? model.distance.map { String(format: "%.2f m", $0) } ?? "—" : "—")
                             stat("BEARING", bearing.map { String(format: "%.0f°", $0 * 180 / .pi) } ?? "—")
@@ -149,7 +158,7 @@ struct ContentView: View {
                             Spacer()
                             capsule(live ? (model.driveStatus?.state.uppercased() ?? "OFFLINE") : "OFFLINE", color: ready ? .green : .gray)
                         }
-                        Text(live ? model.driveStatus?.message ?? "Waiting for Pi" : "Connect to the Pi to enable driving.")
+                        Text(live ? model.driveStatus?.message ?? "Waiting for Pi" : model.piUnavailable ? "Pi unavailable. Start the server; this screen will reconnect automatically." : "Pi not connected. Tracking between phones can still work without it.")
                             .font(.subheadline).foregroundStyle(.secondary)
                         if !isRobot {
                             Text("Hold an arrow to drive. Release to stop.").font(.footnote).foregroundStyle(.secondary)
@@ -267,17 +276,19 @@ private struct RadarView: View {
             let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
             let radius = min(proxy.size.width, proxy.size.height) * 0.39
             ZStack {
-                Canvas { context, size in
-                    for fraction in [0.33, 0.66, 1.0] {
-                        let r = radius * fraction
-                        context.stroke(Path(ellipseIn: CGRect(x: center.x-r, y: center.y-r, width: r*2, height: r*2)), with: .color(.white.opacity(0.12)), lineWidth: 1)
-                    }
-                    var cross = Path(); cross.move(to: CGPoint(x: center.x, y: center.y-radius)); cross.addLine(to: CGPoint(x: center.x, y: center.y+radius)); cross.move(to: CGPoint(x: center.x-radius, y: center.y)); cross.addLine(to: CGPoint(x: center.x+radius, y: center.y))
-                    context.stroke(cross, with: .color(.white.opacity(0.08)), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
+                ForEach([0.33, 0.66, 1.0], id: \.self) { fraction in
+                    Circle().stroke(.white.opacity(0.12), lineWidth: 1)
+                        .frame(width: radius * fraction * 2, height: radius * fraction * 2).position(center)
                 }
+                Path { path in
+                    path.move(to: CGPoint(x: center.x, y: center.y-radius))
+                    path.addLine(to: CGPoint(x: center.x, y: center.y+radius))
+                    path.move(to: CGPoint(x: center.x-radius, y: center.y))
+                    path.addLine(to: CGPoint(x: center.x+radius, y: center.y))
+                }.stroke(.white.opacity(0.08), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
                 Text("REAR CAMERA / FORWARD").font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(.secondary).position(x: center.x, y: 8)
                 Image(systemName: "iphone.gen3").font(.title2).foregroundStyle(.white).position(center)
-                if let angle, let distance {
+                if let angle, let distance, angle.isFinite, distance.isFinite {
                     let r = radius * min(max(Double(distance) / 6, 0.12), 1)
                     let target = CGPoint(x: center.x + sin(Double(angle)) * r, y: center.y - cos(Double(angle)) * r)
                     Image(systemName: isRobot ? "person.fill" : "trash.fill").font(.title3.bold()).foregroundStyle(.black)

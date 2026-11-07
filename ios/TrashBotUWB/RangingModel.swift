@@ -12,8 +12,8 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     func isFresh(at date: Date) -> Bool { updated.map { date.timeIntervalSince($0) >= 0 && date.timeIntervalSince($0) < 1 } ?? false }
     func bearing(at date: Date) -> Float? {
         guard isFresh(at: date) else { return nil }
-        if let horizontalAngle { return horizontalAngle }
-        if let direction { return atan2(direction.x, -direction.z) }
+        if let horizontalAngle, horizontalAngle.isFinite { return horizontalAngle }
+        if let direction, direction.x.isFinite, direction.z.isFinite { return atan2(direction.x, -direction.z) }
         return nil
     }
     func publishRound(_ round: RoundState) {
@@ -98,12 +98,27 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         controlRequest?.resume()
     }
     @discardableResult private func sendMessage<T: Encodable>(kind: String, value: T) -> Bool {
-        guard let mpc, !mpc.connectedPeers.isEmpty else { return false }
+        guard let session = mpc, !session.connectedPeers.isEmpty else { return false }
         do {
-            let message = PeerMessage(kind: kind, payload: try JSONEncoder().encode(value))
-            try mpc.send(JSONEncoder().encode(message), toPeers: mpc.connectedPeers, with: .reliable)
+            let data = try JSONEncoder().encode(PeerMessage(kind: kind, payload: JSONEncoder().encode(value)))
+            enqueuePeerData(data, session: session)
             return true
-        } catch { status = "Peer send failed: \(error.localizedDescription)"; return false }
+        } catch { status = "Could not encode peer message"; return false }
+    }
+    private func enqueuePeerData(_ data: Data, session: MCSession) {
+        let current = generation
+        peerSendQueue.async { [weak self] in
+            do {
+                let peers = session.connectedPeers
+                guard !peers.isEmpty else { return }
+                try session.send(data, toPeers: peers, with: .reliable)
+            } catch {
+                DispatchQueue.main.async {
+                    guard let self, self.generation == current else { return }
+                    self.status = "Peer connection unavailable"
+                }
+            }
+        }
     }
 
     @Published var status = "Stopped"
@@ -132,6 +147,24 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private var request: URLSessionDataTask?
     private var generation = UUID()
     private let deviceID = UUID().uuidString
+    private let peerSendQueue = DispatchQueue(label: "trashketball.peer-send")
+    private var nextUploadAt = Date.distantPast
+    private var uploadBackoff: TimeInterval = 0.25
+    @Published private(set) var piUnavailable = false
+
+    override init() {
+        super.init()
+        #if DEBUG
+        // Regression harness: exercise real failed requests without requiring UWB hardware.
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-offline-pi") {
+            role = "Robot"
+            running = true
+            endpoint = URL(string: "http://127.0.0.1:9/measurements")!
+            apiToken = "offline-ui-test-only"
+            timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.upload() }
+        }
+        #endif
+    }
     private lazy var http: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 2
@@ -157,7 +190,8 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         trackingSession = UUID().uuidString
         running = true
         UIApplication.shared.isIdleTimerDisabled = true
-        delivery = endpoint == nil ? "Phone-only test" : "Waiting to send"
+        piUnavailable = false; nextUploadAt = .distantPast; uploadBackoff = 0.25
+        delivery = endpoint == nil ? "Phone-only test" : "Connecting to Pi…"
         let ranging = NISession()
         ranging.delegate = self
         ranging.delegateQueue = .main
@@ -189,6 +223,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         request?.cancel(); request = nil
         controlRequest = nil
         driveStatus = nil; driveUpdated = nil; driveError = nil
+        piUnavailable = false; nextUploadAt = .distantPast; uploadBackoff = 0.25
         advertiser?.stopAdvertisingPeer(); advertiser = nil
         browser?.stopBrowsingForPeers(); browser = nil
         mpc?.delegate = nil; mpc?.disconnect(); mpc = nil
@@ -208,7 +243,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         do {
             let data = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
             let envelope = try JSONEncoder().encode(PeerMessage(kind: "token", payload: data))
-            try session.send(envelope, toPeers: session.connectedPeers, with: .reliable)
+            enqueuePeerData(envelope, session: session)
         } catch { status = "Token send failed: \(error.localizedDescription)" }
     }
     private func range() {
@@ -222,7 +257,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     }
 
     private func upload() {
-        guard running, let endpoint, request == nil else { return }
+        guard running, let endpoint, request == nil, Date() >= nextUploadAt else { return }
         let age = updated.map { Date().timeIntervalSince($0) }
         let fresh = age.map { $0 >= 0 && $0 < 0.25 } ?? false
         var body: [String: Any] = ["device_id": deviceID, "tracking_session_id": trackingSession, "peer_connected": connected, "role": role.lowercased(), "fresh": fresh,
@@ -245,11 +280,23 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
             DispatchQueue.main.async {
                 guard let self, self.generation == current else { return }
                 self.request = nil
-                if let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data), let status = reply.drive {
+                let httpCode = (response as? HTTPURLResponse)?.statusCode
+                if error == nil, httpCode == 200,
+                   let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data), let status = reply.drive {
+                    self.piUnavailable = false
+                    self.uploadBackoff = 0.25
+                    self.nextUploadAt = .distantPast
                     self.applyDrive(status)
+                    if self.delivery != "Connected to Pi" { self.delivery = "Connected to Pi" }
+                } else {
+                    self.piUnavailable = true
+                    self.driveStatus = nil; self.driveUpdated = nil
+                    // Slow connection attempts without changing the independent control watchdog.
+                    self.nextUploadAt = Date().addingTimeInterval(self.uploadBackoff)
+                    self.uploadBackoff = min(4, self.uploadBackoff * 2)
+                    let message = httpCode == 401 ? "Pi token rejected. Check Connect settings." : "Pi unavailable · retrying automatically"
+                    if self.delivery != message { self.delivery = message }
                 }
-                if let error { self.delivery = error.localizedDescription }
-                else if let response = response as? HTTPURLResponse { self.delivery = response.statusCode == 200 ? "Receiving on Pi" : "Pi HTTP \(response.statusCode)" }
             }
         }
         request?.resume()
