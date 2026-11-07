@@ -34,10 +34,17 @@ GPIOZERO_PIN_FACTORY=mock GPIOZERO_MOCK_PIN_CLASS=mockpwmpin python test_drive.p
 
 The Pi drives the same L298N as the ESP32 build. The motor supply is 12 V. The TT motors are rated 6 V. Pi GPIO is 3.3 V logic into the L298N inputs. Each enable pin is software PWM at 1000 Hz.
 
-These BCM numbers are the defaults on `DrivePins` in `trashketball/drive.py`. The ESP32 sketch uses different GPIO numbers.
+GPIO pinout on the can. Every number below is a BCM GPIO, not a physical header pin. Motor 1 is the left channel and motor 2 is the right channel. The motor GPIOs are the defaults on `DrivePins` in `trashketball/drive.py`. The ESP32 sketch uses different GPIO numbers. The beam brake and the ultrasonic trigger/echo are wired, and the drive library does not read them.
 
-- Left: forward 17, backward 27, enable 22
-- Right: forward 23, backward 24, enable 25
+- GPIO 24: beam brake sensor
+- GPIO 17: motor 1 forward
+- GPIO 27: motor 1 backward
+- GPIO 18: motor 1 enable
+- GPIO 22: motor 2 forward
+- GPIO 23: motor 2 backward
+- GPIO 19: motor 2 enable
+- GPIO 5: ultrasonic trigger
+- GPIO 6: ultrasonic echo
 
 A command speed of 100% is written as duty `130/255` (`MAX_DUTY`). Raising `MAX_DUTY` can overvolt the motors on the 12 V supply.
 
@@ -59,12 +66,12 @@ Each side takes a direction bool and a speed as a percent from 0 to 100. Values 
 from trashketball import Drive, DrivePins
 
 pins = DrivePins(
-    left_forward=5,
-    left_backward=6,
-    left_enable=13,
-    right_forward=16,
-    right_backward=19,
-    right_enable=26,
+    left_forward=17,
+    left_backward=27,
+    left_enable=18,
+    right_forward=22,
+    right_backward=23,
+    right_enable=19,
 )
 
 with Drive(pins) as drive:
@@ -73,6 +80,6 @@ with Drive(pins) as drive:
     drive.set_motor_control(left_forward=True, left_speed=100, right_forward=False, right_speed=100)
 ```
 
-That example builds a `Drive` on custom pins, drives both sides forward at 70%, coasts, then spins by driving the sides in opposite directions.
+That example builds a `Drive` on the harness pins above (motor 1 on the left channel, motor 2 on the right), drives both sides forward at 70%, coasts, then spins by driving the sides in opposite directions. `Drive()` uses those same motor pins.
 
 `run_sequence` in `test_drive.py` is the full timed demo. It drives forward for 2 seconds, coasts for 0.1 seconds, spins in place for 1 second, coasts for 1 second, spins the other way for 1 second, coasts for 0.1 seconds, reverses for 2 seconds, then coasts for 1 second. Those coasts match the ESP32 `loop()`.

@@ -54,3 +54,15 @@ Apple references: [Nearby Interaction](https://developer.apple.com/documentation
 ## Pi motor driver
 
 The teammate-maintained motor driver and wiring instructions are in [Firmware/PI/README.md](Firmware/PI/README.md). This is separate from the measurement-only receiver in `pi/`.
+
+GPIO pinout on the can. Every number below is a BCM GPIO, not a physical header pin.
+
+- GPIO 24: beam brake sensor
+- GPIO 17: motor 1 forward
+- GPIO 27: motor 1 backward
+- GPIO 18: motor 1 enable
+- GPIO 22: motor 2 forward
+- GPIO 23: motor 2 backward
+- GPIO 19: motor 2 enable
+- GPIO 5: ultrasonic trigger
+- GPIO 6: ultrasonic echo

@@ -18,10 +18,10 @@ class DrivePins:
 
     left_forward: int = 17
     left_backward: int = 27
-    left_enable: int = 22
-    right_forward: int = 23
-    right_backward: int = 24
-    right_enable: int = 25
+    left_enable: int = 18
+    right_forward: int = 22
+    right_backward: int = 23
+    right_enable: int = 19
 
 
 class Drive:
