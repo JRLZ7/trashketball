@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDisplayName</key><string>Trashketball</string>
+<key>NSNearbyInteractionUsageDescription</key><string>Measure distance and direction between the player and TrashBot phones.</string>
+<key>NSCameraUsageDescription</key><string>Use camera-assisted Nearby Interaction to improve direction tracking toward the other phone.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Discover the other test phone and send measurements to the Raspberry Pi.</string>
+<key>NSBonjourServices</key><array><string>_trashbot-uwb._tcp</string><string>_trashbot-uwb._udp</string></array>
+<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+<key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
+<key>UILaunchScreen</key><dict/>
+<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+</dict></plist>

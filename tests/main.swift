@@ -1,0 +1,33 @@
+import Foundation
+
+let suite = "trashketball.tests.\(UUID().uuidString)"
+let defaults = UserDefaults(suiteName: suite)!
+defer { defaults.removePersistentDomain(forName: suite) }
+let game = GameStore(defaults: defaults)
+let start = Date(timeIntervalSince1970: 1000)
+game.configure(target: 3, duration: 30)
+game.record(made: true, now: start)
+assert(game.round.score == 0, "Cannot score before a round")
+game.start(now: start)
+game.configure(target: 1)
+assert(game.round.targetMeters == 3, "Cannot alter points during a round")
+game.record(made: true, now: start.addingTimeInterval(1))
+game.record(made: false, now: start.addingTimeInterval(2))
+assert(game.round.score == 3 && game.round.baskets == 1 && game.round.shots.count == 2)
+game.undo(now: start.addingTimeInterval(3))
+game.undo(now: start.addingTimeInterval(4))
+assert(game.round.score == 0 && game.best == 0)
+game.record(made: true, now: start.addingTimeInterval(5))
+game.record(made: true, now: start.addingTimeInterval(30))
+assert(game.round.score == 3, "Cannot score at/after deadline")
+game.tick(now: start.addingTimeInterval(30))
+assert(game.round.finished && game.best == 3)
+assert(GameStore(defaults: defaults).best == 3, "Best survives relaunch")
+game.reset()
+assert(game.round.score == 0 && game.round.targetMeters == 3 && game.round.startedAt == nil)
+let decoded = try JSONDecoder().decode(RoundState.self, from: JSONEncoder().encode(game.round))
+assert(decoded == game.round, "Peer round encoding round trip")
+let intent = RobotIntent(action: "stop", targetMeters: 2)
+let decodedIntent = try JSONDecoder().decode(RobotIntent.self, from: JSONEncoder().encode(intent))
+assert(decodedIntent == intent)
+print("Game scoring, expiry, undo, persistence and peer encoding checks passed")
