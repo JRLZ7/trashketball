@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 import threading
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import time
 import unittest
 from http.server import ThreadingHTTPServer
@@ -83,6 +85,29 @@ class ReceiverTests(unittest.TestCase):
         with receiver.lock:
             receiver.latest['robot'] = (sample, time.monotonic() - 2)
         self.assertIsNone(self.call('/latest')[1]['robot']['intent'])
+
+    def test_http_motor_control(self):
+        from controller import Controller
+        class FakeDrive:
+            def __init__(self): self.last = None
+            def set_motor_control(self, lf=True, ls=0, rf=True, rs=0):
+                self.last = (ls if lf else -ls, rs if rf else -rs)
+        drive = FakeDrive()
+        receiver.controller = Controller(drive)
+        command = dict(id='move', client_id='phone', sequence=1, sent_at=time.time(), action='forward', speed=25, targetMeters=2)
+        try:
+            self.assertEqual(self.call('/control', command, token=False)[0], 401)
+            status, reply = self.call('/control', command)
+            self.assertEqual(status, 200)
+            self.assertEqual(drive.last, (25,25))
+            self.assertEqual(reply['drive']['state'], 'manual')
+            stop = {**command, 'id': 'stop', 'action': 'stop', 'sequence': 2}
+            self.assertEqual(self.call('/control', stop)[0], 200)
+            self.assertEqual(drive.last, (0,0))
+            self.assertEqual(self.call('/control', command)[0], 409)
+            self.assertEqual(self.call('/status')[1]['drive']['state'], 'stopped')
+        finally:
+            receiver.controller = Controller()
 
     def test_invalid_payloads(self):
         for patch in ({'distance_m': -1}, {'distance_m': float('nan')},

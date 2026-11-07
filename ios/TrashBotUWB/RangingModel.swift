@@ -7,8 +7,6 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     @Published var running = false
     @Published var connected = false
     @Published var remoteRound: RoundState?
-    @Published var latestIntent: RobotIntent?
-    @Published var intentStatus = "No request sent"
     private var localRound: RoundState?
     var isRobot: Bool { role == "Robot" }
     func isFresh(at date: Date) -> Bool { updated.map { date.timeIntervalSince($0) >= 0 && date.timeIntervalSince($0) < 1 } ?? false }
@@ -22,16 +20,82 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         localRound = round
         if connected && !isRobot { sendMessage(kind: "round", value: round) }
     }
-    func sendIntent(action: String, targetMeters: Int) {
-        guard connected, !isRobot, ["summon", "stop"].contains(action) else { intentStatus = "Connect to the can first"; return }
-        if action == "summon" && (!isFresh(at: .now) || distance == nil || bearing(at: .now) == nil) {
-            intentStatus = "Wait for live distance and bearing"; return
+    @Published var driveStatus: DriveStatus?
+    @Published var driveUpdated: Date?
+    @Published var activeAction: String?
+    @Published var driveError: String?
+    private var motion: MotionCommand?
+    private var controlRequest: URLSessionDataTask?
+    private var controlTimer: Timer?
+    private var controlSequence = 0
+    private var trackingSession = UUID().uuidString
+    var canControlPi: Bool { running && endpoint != nil }
+    func driveIsLive(at now: Date) -> Bool {
+        driveUpdated.map { now.timeIntervalSince($0) < 1 } ?? false
+    }
+    func sendIntent(action: String, targetMeters: Int, speed: Int = 50) {
+        if action == "stop" { stopMotion(); return }
+        beginMotion(action: action, targetMeters: targetMeters, speed: speed)
+    }
+    func beginMotion(action: String, targetMeters: Int = 2, speed: Int = 50) {
+        guard !isRobot, running, endpoint != nil else { driveError = "Enter the Pi URL and token, then connect."; return }
+        guard driveIsLive(at: .now), driveStatus?.enabled == true else { driveError = "Pi motor bridge is not ready."; return }
+        if action == "summon" && (!connected || driveStatus?.summonReady != true) {
+            driveError = "Connect both phones and calibrate the mounted bearing on the Pi."; return
         }
-        let intent = RobotIntent(action: action, targetMeters: targetMeters)
-        if sendMessage(kind: "intent", value: intent) {
-            latestIntent = intent
-            intentStatus = action == "stop" ? "Stop sent · awaiting can receipt" : "Summon sent · awaiting can receipt"
+        guard activeAction != action else { return }
+        driveError = nil
+        motion = MotionCommand(client_id: deviceID, sequence: 0, sent_at: 0,
+                               action: action, targetMeters: targetMeters, speed: speed)
+        activeAction = action
+        sendControl(force: true)
+    }
+    func stopMotion() {
+        guard endpoint != nil, running else { motion = nil; activeAction = nil; return }
+        motion = MotionCommand(client_id: deviceID, sequence: 0, sent_at: 0,
+                               action: "stop", targetMeters: 2, speed: 25)
+        activeAction = nil
+        sendControl(force: true)
+    }
+    private func applyDrive(_ status: DriveStatus) {
+        driveStatus = status; driveUpdated = .now
+        if isRobot && connected { sendMessage(kind: "drive", value: status) }
+    }
+    private func sendControl(force: Bool = false) {
+        guard let endpoint, var command = motion, force || controlRequest == nil else { return }
+        if force { controlRequest?.cancel(); controlRequest = nil }
+        controlSequence += 1
+        command.sequence = controlSequence
+        command.sent_at = Date().timeIntervalSince1970
+        motion = command
+        var req = URLRequest(url: endpoint.deletingLastPathComponent().appendingPathComponent("control"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONEncoder().encode(command)
+        let current = generation
+        controlRequest = http.dataTask(with: req) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self, self.generation == current, self.motion?.id == command.id else { return }
+                self.controlRequest = nil
+                if let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data) {
+                    if let status = reply.drive {
+                        self.applyDrive(status)
+                        if status.commandID != command.id { self.motion = nil; self.activeAction = nil }
+                    }
+                    if let error = reply.error { self.driveError = error; self.motion = nil; self.activeAction = nil }
+                }
+                if let error {
+                    self.driveError = "Pi connection lost: " + error.localizedDescription
+                    self.motion = nil; self.activeAction = nil
+                } else if let response = response as? HTTPURLResponse, response.statusCode != 200 {
+                    self.driveError = self.driveError ?? "Pi rejected command (HTTP \(response.statusCode))"
+                    self.motion = nil; self.activeAction = nil
+                }
+                if command.action == "stop" { self.motion = nil; self.activeAction = nil }
+            }
         }
+        controlRequest?.resume()
     }
     @discardableResult private func sendMessage<T: Encodable>(kind: String, value: T) -> Bool {
         guard let mpc, !mpc.connectedPeers.isEmpty else { return false }
@@ -90,6 +154,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         } else { endpoint = nil }
         self.role = role
         apiToken = token
+        trackingSession = UUID().uuidString
         running = true
         UIApplication.shared.isIdleTimerDisabled = true
         delivery = endpoint == nil ? "Phone-only test" : "Waiting to send"
@@ -110,20 +175,27 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
             search.delegate = self; browser = search; search.startBrowsingForPeers()
         }
         status = "Looking for the other phone"
-        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.upload() }
+        controlTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.sendControl() }
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.upload() }
     }
 
     func stop() {
+        stopMotion()
+        controlTimer?.invalidate(); controlTimer = nil
+        motion = nil; activeAction = nil
+        // Pi watchdog stops output if this final request cannot arrive.
         generation = UUID()
         timer?.invalidate(); timer = nil
         request?.cancel(); request = nil
+        controlRequest = nil
+        driveStatus = nil; driveUpdated = nil; driveError = nil
         advertiser?.stopAdvertisingPeer(); advertiser = nil
         browser?.stopBrowsingForPeers(); browser = nil
         mpc?.delegate = nil; mpc?.disconnect(); mpc = nil
         ni?.delegate = nil; ni?.invalidate(); ni = nil
         peerToken = nil
         clear()
-        connected = false; remoteRound = nil; latestIntent = nil; intentStatus = "No request sent"
+        connected = false; remoteRound = nil
         delivery = "Disconnected"
         convergence = "Not started"
         running = false; status = "Stopped"; peerName = "None"
@@ -152,8 +224,8 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private func upload() {
         guard running, let endpoint, request == nil else { return }
         let age = updated.map { Date().timeIntervalSince($0) }
-        let fresh = age.map { $0 < 1 } ?? false
-        var body: [String: Any] = ["device_id": deviceID, "role": role.lowercased(), "fresh": fresh,
+        let fresh = age.map { $0 >= 0 && $0 < 0.25 } ?? false
+        var body: [String: Any] = ["device_id": deviceID, "tracking_session_id": trackingSession, "peer_connected": connected, "role": role.lowercased(), "fresh": fresh,
             "distance_m": NSNull(), "direction": NSNull(), "horizontal_angle_rad": NSNull(), "age_s": age.map { $0 as Any } ?? NSNull()]
         if fresh {
             if let distance { body["distance_m"] = distance }
@@ -163,19 +235,19 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         if let game = (isRobot ? remoteRound : localRound),
            let data = try? JSONEncoder().encode(game),
            let value = try? JSONSerialization.jsonObject(with: data) { body["game"] = value }
-        if let intent = latestIntent,
-           let data = try? JSONEncoder().encode(intent),
-           let value = try? JSONSerialization.jsonObject(with: data) { body["intent"] = value }
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let current = generation
-        request = http.dataTask(with: req) { [weak self] _, response, error in
+        request = http.dataTask(with: req) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self, self.generation == current else { return }
                 self.request = nil
+                if let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data), let status = reply.drive {
+                    self.applyDrive(status)
+                }
                 if let error { self.delivery = error.localizedDescription }
                 else if let response = response as? HTTPURLResponse { self.delivery = response.statusCode == 200 ? "Receiving on Pi" : "Pi HTTP \(response.statusCode)" }
             }
@@ -236,17 +308,9 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                     self.peerToken = token; self.range()
                 case "round" where self.isRobot:
                     self.remoteRound = try JSONDecoder().decode(RoundState.self, from: message.payload)
-                case "intent" where self.isRobot:
-                    let intent = try JSONDecoder().decode(RobotIntent.self, from: message.payload)
-                    guard ["summon", "stop"].contains(intent.action), (1...3).contains(intent.targetMeters) else { return }
-                    self.latestIntent = intent
-                    self.intentStatus = intent.action == "stop" ? "Stop received · driver not connected" : "Summon received · driver not connected"
-                    self.sendMessage(kind: "receipt", value: intent)
-                case "receipt" where !self.isRobot:
-                    let receipt = try JSONDecoder().decode(RobotIntent.self, from: message.payload)
-                    if receipt.id == self.latestIntent?.id {
-                        self.intentStatus = "Can received request · driver not connected"
-                    }
+                case "drive" where !self.isRobot:
+                    self.driveStatus = try JSONDecoder().decode(DriveStatus.self, from: message.payload)
+                    self.driveUpdated = .now
                 default: break
                 }
             } catch { self.status = "Could not read peer message. Install the same app on both phones." }

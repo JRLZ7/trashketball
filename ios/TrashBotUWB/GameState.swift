@@ -71,13 +71,32 @@ final class GameStore: ObservableObject {
     }
 }
 
-struct RobotIntent: Codable, Equatable {
-    var id = UUID()
-    var action: String
-    var targetMeters: Int
-}
-
 struct PeerMessage: Codable {
     var kind: String
     var payload: Data
+}
+
+struct DriveStatus: Codable {
+    var enabled: Bool
+    var state: String
+    var message: String
+    var summonReady: Bool
+    var left: Double
+    var right: Double
+    var commandID: String?
+}
+
+struct PiReply: Decodable {
+    var drive: DriveStatus?
+    var error: String?
+}
+
+struct MotionCommand: Codable, Equatable {
+    var id = UUID().uuidString
+    var client_id: String
+    var sequence: Int
+    var sent_at: Double
+    var action: String
+    var targetMeters: Int
+    var speed: Int
 }

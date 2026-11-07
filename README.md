@@ -1,68 +1,57 @@
 # Trashketball
 
-A moving-basket game for the Duke Cube hackathon. Two iPhones use Nearby Interaction to measure relative distance and camera-assisted bearing; a Raspberry Pi receives the telemetry. Native SwiftUI app, Python receiver, no third-party dependencies.
+Two iPhones provide UWB distance and camera-assisted bearing. A native SwiftUI app runs the game and sends movement commands over Wi-Fi to a Raspberry Pi, which drives the L298N through the teammate's Python `Drive` class.
 
-## What works in this version
+## App
 
-- **Play:** 30/60/90-second rounds; 1/2/3 m challenges worth 1/2/3 points per basket; manual basket/miss logging, undo, timer expiry, saved personal best. Points use the selected challenge distance, not an automatically verified floor distance.
-- **Locate:** live distance and horizontal bearing, relative radar, missing/stale tracking states, camera-calibration guidance. This is relative phone positioning, not a room map. Display radius is 6 m; farther targets are clamped visually while numeric distance stays unchanged.
-- **Connect:** Player/On-the-can roles, encrypted Multipeer Connectivity pairing, optional authenticated Pi telemetry at up to 5 Hz.
-- Player round/score sync to the can phone. Summon/stop intents are acknowledged by the can phone and included in telemetry.
-- **Driving is offline.** An acknowledgement means the phone received the request, not that motors executed it. No motor commands, obstacle avoidance, automatic scoring, or physical emergency-stop functionality are implemented here. The teammate's Pi controller remains separate.
+Open `ios/TrashBotUWB.xcodeproj`, select your signing team, and install on **both phones** (iOS 17+).
 
-## Run on your two iPhones
+- **Play:** 30/60/90-second rounds, 1/2/3 m challenges, manual basket/miss logging, undo, personal best. Points follow the selected challenge; there is no automatic basket sensor yet. Score syncs to the can phone.
+- **Locate:** live relative radar, distance, bearing and calibration guidance. Hold an arrow to drive; release to stop. Speed adjusts from 20–70% of the driver's already duty-capped scale. Summon turns toward the player and approaches the selected throwing distance.
+- **Connect:** Player/On the can roles, camera assistance, Pi URL/token and diagnostics. Use the same Pi URL/token on both phones. Keep both apps foregrounded.
 
-1. Open `ios/TrashBotUWB.xcodeproj` in Xcode. Select the TrashBotUWB target and your team under Signing & Capabilities. If needed, change the bundle identifier to a unique one. App name on the phone is **Trashketball**; target name remains TrashBotUWB.
-2. Install on both physical phones (iOS 17+). This replaces the earlier test app if the bundle identifier is unchanged. Simulator is useful for UI only.
-3. On **Connect**, choose Player on the handheld phone and On the can on the mounted phone. Leave Pi URL blank for initial phone-only play.
-4. Leave camera assistance on; enable Wi-Fi/Bluetooth, grant Nearby Interaction, Local Network and Camera permission. Tap Connect phones on both.
-5. Calibrate in a well-lit textured area. Face rear cameras toward one another initially and translate/sweep the phones horizontally and vertically. If calibration reports insufficientMovement, translate the phone through space rather than just rotating it. Keep both apps foregrounded.
-6. On Locate, verify live distance and bearing, including after putting the phone in its real mount. On Play, select a challenge and start a round. Log baskets manually. Watch the score sync on the other phone.
+3D direction can report unsupported on newer iPhones while camera-assisted horizontal angle works. For calibration, translate and sweep the phones in a textured, well-lit room, initially facing their rear cameras toward one another. Test the mounted phone's bearing, not just a handheld phone. The radar is relative to the phone, not a room map.
 
-Both phones need this version: the peer protocol now carries token, round, intent and receipt messages. Older test builds cannot pair correctly with this protocol. Backgrounding or disconnecting stops ranging; reconnect BOTH phones. A running game continues against its wall-clock deadline and finishes when the player app next updates. Completed best score persists locally; ongoing rounds and peer requests do not survive app termination.
+## Start on the Pi
 
-`supportsDirectionMeasurement == false` on the tested 16 Pro/17 Pro does not preclude camera-assisted `horizontalAngle`. The app uses horizontalAngle first, with a 3D-vector fallback when available. Missing bearing remains missing; it is never invented from distance.
-
-## Optional Pi telemetry
-
-Copy `pi/server.py` to the Pi (or run it from a checkout):
+Run from the repository root. Do not run `test_drive.py` at the same time: only one process should own the motor GPIO.
 
 ```sh
+sudo apt install python3-gpiozero python3-lgpio
 export TRASHBOT_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-python3 pi/server.py
+python3 pi/server.py --drive
 ```
 
-The receiver listens on port **5001**. In another terminal, run `hostname -I` to find the LAN address. Enter `http://PI_IP:5001` and the same token in each phone's Connect screen while disconnected, then reconnect. The token stays in phone memory only. Use `printenv TRASHBOT_TOKEN` in the server terminal to see the generated value.
+This enables **manual driving**. Without `--drive`, the server runs telemetry only. See `Firmware/PI/trashketball/drive.py` for the authoritative BCM pin defaults and PWM cap; the bridge does not change them. Current defaults are left IN1/IN2/ENA = 17/27/18 and right IN3/IN4/ENB = 22/23/19. Motor power remains separate from Pi power, with common ground.
 
-Health check from Safari: `http://PI_IP:5001/health`. If unreachable, check Wi-Fi client isolation, IP, firewall/port, and Local Network permission. Own hotspot/router is preferable to an isolated venue LAN. This HTTP receiver is for a trusted LAN only; bearer tokens are unencrypted in transit. Do not expose it to the internet.
+Find the Pi's address with `hostname -I`. On both phones, enter `http://PI_IP:5001` and the same token in Connect, then reconnect. Use `printenv TRASHBOT_TOKEN` in the server terminal to see the generated token. It stays in phone memory only. `/health` is a Safari connectivity check; `/status`, `/latest` and all POST routes require the bearer token. Use a trusted LAN/hotspot; HTTP tokens are unencrypted in transit.
 
-See [the Pi integration contract](docs/pi-interface.md) for payloads and teammate integration. The receiver prints JSON and exposes authenticated latest telemetry; it does not drive motors.
+## First movement and Summon
 
-## Validation
+1. Lift the driven wheels off the ground. Start the server with `--drive`, connect the Player app to the Pi, and hold Forward. Both wheels should rotate forward. Release and verify stopping; test reverse and each turn. Adjust `--invert-left` / `--invert-right` if physical motor polarity differs.
+2. Put the can phone in its final mount. Check the player is straight ahead at angle near zero; move the player right and verify the reported bearing sign against the steering convention. Restart the server with `--bearing-sign -1` or `--bearing-offset-deg VALUE` if needed. The sign is applied before the offset. Zero is the robot-forward direction after calibration.
+3. After verifying steering sign and mount, enable Summon:
 
 ```sh
-python3 -m unittest discover -s pi -p test_server.py -v
+python3 pi/server.py --drive --bearing-calibrated
+```
+
+Add your inversion/sign/offset flags to this command as needed. Summon stays disabled in the UI until the Pi reports calibration enabled. Both phones must be paired, and the **robot phone** must supply fresh distance and bearing. Test in a clear arena at a low speed with a spotter and physical kill switch. There is no obstacle detection.
+
+Summon pivots toward the player, drives forward, and stops when the measured phone-to-phone range is within 15 cm above the selected distance. It never reverses if already too close. Slant range and mounting height affect the relationship to floor distance. Summon caps the drive command at 50%; hardware tuning is still required.
+
+The Pi has a **300 ms command watchdog**, independent of the HTTP upload task. Summon also stops if robot tracking is older than 250 ms, loses bearing/peer connection, or changes tracking session. A stopped/expired request cannot resume itself: press Summon or a direction again. Leaving Locate, backgrounding/disconnecting the app, and releasing a manual arrow request Stop; if that request fails, the Pi watchdog expires. This is not a substitute for the physical kill switch. Stop is coast/enable-off using the existing driver.
+
+Phone and Pi clocks must agree closely: the server rejects movement packets older than 300 ms or more than 250 ms in the future. Stop is accepted despite clock skew. Keep system network time enabled.
+
+## Tests
+
+```sh
+python3 -m unittest discover -s pi -p 'test_*.py' -v
 swiftc -module-cache-path /tmp/trashketball-swift-cache ios/TrashBotUWB/GameState.swift tests/main.swift -o /tmp/trashketball-game-tests
 /tmp/trashketball-game-tests
-xcodebuild -project ios/TrashBotUWB.xcodeproj -scheme TrashBotUWB -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath .build CODE_SIGNING_ALLOWED=NO build
 ```
 
-Builds have been checked for physical iOS and Simulator. Tests cover scoring, undo, deadline, best-score persistence, peer payload encoding, authenticated HTTP roundtrips, malformed measurements, optional bearing, game/intent data, and stale telemetry. Two-device game sync and intent acknowledgements still need physical validation; UWB distance/bearing was validated separately on your phones before this integration.
+Controller/HTTP tests use injected fake motors, including watchdog, tracking loss, arrival, stale/replayed commands and authenticated motor calls. The actual teammate `Drive` class has also been checked with gpiozero mock PWM pins. iOS builds are checked unsigned; radio performance, mounting calibration, motor force and stopping distance require real hardware tests.
 
-Apple references: [Nearby Interaction](https://developer.apple.com/documentation/nearbyinteraction), [camera assistance and horizontal angle](https://developer.apple.com/videos/play/wwdc2022/10008/), [peer discovery](https://developer.apple.com/documentation/nearbyinteraction/discovering-peers-with-multipeer-connectivity).
-
-## Pi motor driver
-
-The teammate-maintained motor driver and wiring instructions are in [Firmware/PI/README.md](Firmware/PI/README.md). This is separate from the measurement-only receiver in `pi/`.
-
-GPIO pinout on the can. Every number below is a BCM GPIO, not a physical header pin.
-
-- GPIO 24: beam brake sensor
-- GPIO 17: motor 1 forward
-- GPIO 27: motor 1 backward
-- GPIO 18: motor 1 enable
-- GPIO 22: motor 2 forward
-- GPIO 23: motor 2 backward
-- GPIO 19: motor 2 enable
-- GPIO 5: ultrasonic trigger
-- GPIO 6: ultrasonic echo
+[Pi HTTP contract](docs/pi-interface.md) · [Teammate motor-driver guide](Firmware/PI/README.md)

@@ -1,56 +1,69 @@
-# Pi integration contract · telemetry adapter
+# Pi motor bridge
 
-The teammate's driver lives on a separate branch. This receiver is a test adapter, not its replacement. Keep motor output disabled until mounting calibration and command/watchdog semantics are agreed. No GPIO pins or driver API are assumed.
+`pi/server.py` wraps `Firmware/PI/trashketball/drive.py`. No changes to the teammate driver or pin map are needed. Start with `--drive` for GPIO output; without it, telemetry works but movement returns HTTP 409. `--bearing-calibrated` explicitly enables autonomous approach. Optional flags: `--bearing-sign -1`, `--bearing-offset-deg N`, `--invert-left`, `--invert-right`.
 
-## Transport
+## HTTP
 
-Both phones POST to `/measurements` at up to 5 Hz, using `Authorization: Bearer TOKEN` and JSON. At most one upload is outstanding per phone; failed requests time out and retry on a later tick. There is no background delivery. Payload is capped at 64 KiB by the receiver. `GET /health` is public; `GET /latest` requires the same token. Data is in memory; the receiver prints packets as JSON.
+Trusted LAN, port 5001. All routes except `/health` require `Authorization: Bearer TOKEN` (TRASHBOT_TOKEN must be at least 16 characters). Request size limit: 64 KiB.
 
-Minimal example:
+- `GET /health`: connectivity and `motors_enabled`.
+- `GET /status`: current `drive` state.
+- `POST /measurements`: robot/player telemetry; returns current `drive` state.
+- `GET /latest`: latest telemetry keyed by `robot` and `user`. This diagnostic snapshot uses its original one-second display expiry; navigation uses the stricter controller thresholds below.
+- `POST /control`: a movement command/lease renewal; returns current `drive` state. HTTP 409 rejects unsafe, stale, out-of-order or unavailable commands. HTTP 503 reports a motor fault.
+
+Example control packet:
 
 ```json
 {
-  "device_id": "session-generated-UUID",
-  "role": "robot",
-  "fresh": true,
-  "age_s": 0.05,
-  "distance_m": 2.4,
-  "horizontal_angle_rad": 0.15,
-  "direction": null,
-  "intent": {
-    "id": "UUID",
-    "action": "summon",
-    "targetMeters": 2
-  },
-  "game": {
-    "id": "UUID",
-    "targetMeters": 2,
-    "durationSeconds": 30,
-    "finished": false,
-    "startedAt": 815000000,
-    "endsAt": 815000030,
-    "shots": [{"id": "UUID", "made": true, "points": 2}]
-  }
+  "client_id": "player-app-session-UUID",
+  "id": "command-UUID",
+  "sequence": 12,
+  "sent_at": 1794099600.123,
+  "action": "forward",
+  "speed": 50,
+  "targetMeters": 2
 }
 ```
 
-`game` and `intent` are optional. Swift JSONEncoder dates are seconds since **2001-01-01 UTC**, not Unix epoch. Convert with `unix_seconds = encoded_date + 978307200`. Shots are capped at 256 per round. Score is the sum of shot points; baskets count `made == true`. Player is the game authority; Robot only mirrors the state.
+Actions: `forward`, `reverse`, `left`, `right`, `summon`, `stop`. Speed is percent of the driver's command scale (1–70 allowed); the driver further applies its existing 130/255 PWM duty cap. App manual range is 20–70; Summon caps output at 50. `targetMeters` is 1, 2 or 3. `sent_at` is Unix seconds. For motion it must be within [-250 ms future, 300 ms old] of the Pi clock. Keep network time enabled.
 
-`/latest` returns an object keyed by `robot` and `user`. Each entry includes `received_age_s` calculated with the receiver's monotonic clock. Only one pair is supported per receiver; later packets overwrite their role slot. This is not a public multi-user matchmaking service.
+A hold/Summon uses one UUID and renews it every 100 ms, with increasing sequence and a new timestamp. The Pi expires the lease after 300 ms. The app uses a separate HTTP task for control, independent of telemetry; only one renewal is outstanding. New actions get new IDs. Release/Stop uses a new ID. Any authenticated valid Stop takes precedence, including with skewed clocks or an older sequence. Completed, stopped, tracking-lost or timed-out command IDs cannot restart (bounded recent-ID cache, plus sequence ordering for the active owner). Another client cannot take over active motion; it may Stop, then issue a new command.
 
-## Coordinate and freshness semantics
+Every reply carries `drive`:
 
-- Use **robot-role** measurements for robot steering. Player-phone bearings use another reference frame and cannot be substituted or averaged directly.
-- Distance is phone-to-phone slant range, not automatically horizontal ground distance. Different mounting heights change that relationship.
-- `horizontal_angle_rad` comes from Apple's `horizontalAngle`, in radians in the measuring phone's frame. Calibrate sign/forward offset in the actual mount before steering. The radar uses positive angles to the display's right and zero toward the rear-camera forward ray as a visualization convention; this is not a calibrated wheel command.
-- `direction` is optional x/y/z unit-vector data, not meters or a shared world position. It may always be null on the tested newer devices.
-- `fresh` means a measurement update was received locally within one second. Individual optional fields can still be null. The receiver additionally expires fields after reported sample age plus receiver elapsed time reaches one second. Transmission delay is not included in that estimate. This display freshness window is **not** a motor watchdog.
-- On stale snapshots, the receiver clears distance, direction, bearing and intent. Missing bearing must not be interpreted as zero/straight ahead.
+```json
+{"enabled":true,"state":"manual","message":"Manual: forward","summonReady":false,"left":50,"right":50,"commandID":"command-UUID"}
+```
 
-## Request lifecycle
+`left`/`right` are requested robot-relative signed percentages before optional motor inversion. States include `disabled`, `stopped`, `manual`, `turning`, `approaching`, `arrived`, `tracking_lost`, `timed_out`, `fault`. These are commanded states, not encoder-confirmed movement. A successful motor write cannot verify that wheels physically turned.
 
-Player → encrypted peer message → Robot phone → receipt to Player. The latest intent is then included in periodic telemetry from both phones, not a dedicated motor endpoint. UUID stays constant across repeats. Receipt only confirms phone delivery. Current UI always labels driving offline.
+## Robot tracking
 
-A future adapter must deduplicate request UUIDs, reject stale sessions and unsafe measurement states, and define arrival/stop/execution acknowledgements. Do not execute the same summon on every telemetry packet. Do not replay a stored summon after a restart or tracking recovery. Stop should take precedence. The native app's Request stop depends on a live peer connection and is not an emergency stop.
+Both phones upload at up to 20 Hz. Only `role=robot` is used for steering:
 
-Once the teammate's API is available, connect it through a dedicated adapter rather than mixing GPIO into the app or replacing their driver. Decide control update rate, timeout, motor polarity, bearing calibration, range/arrival tolerance and physical stop handling together. The app does not yet consume driver state or claim that the robot has arrived.
+```json
+{
+  "device_id":"phone-session-UUID",
+  "tracking_session_id":"ranging-session-UUID",
+  "peer_connected":true,
+  "role":"robot",
+  "fresh":true,
+  "age_s":0.02,
+  "distance_m":3.1,
+  "horizontal_angle_rad":0.15,
+  "direction":null
+}
+```
+
+Summon requires fresh connected robot pose with non-null distance and bearing. Sample age plus monotonic time since Pi receipt must be below 250 ms; pose receipt must be within 300 ms. Transmission delay is not in this pose-age estimate; expired control packets are separately rejected. If horizontal angle is null, the bridge can use `atan2(direction.x, -direction.z)` when a 3D vector exists. Missing bearing is never zero. On tracking loss/session change, stop and require a new Summon; do not automatically resume on recovery. Robot-phone disconnect also requests Stop, and loss of its uploads expires pose freshness.
+
+Bearing is relative to the measuring phone. The calibrated controller angle is `wrap(sign * angle + offset)`. Positive means player to robot's right, so the controller pivots with left wheel forward/right reverse. Validate against actual mounting, wheel polarity and Apple horizontal-angle output before `--bearing-calibrated`. Distance is phone-to-phone slant range. Phone motion and mounting height affect it. The relative radar is not a room map.
+
+## Game / compatibility
+
+Optional `game` in telemetry carries the mirrored RoundState: UUID, targetMeters, durationSeconds, finished, startedAt/endsAt and shots (UUID, made, points), capped at 256 shots. Round dates are Swift JSONEncoder seconds since **2001-01-01 UTC** (add 978307200 for Unix time); control timestamps are explicitly Unix seconds. Player is game authority. Legacy `intent` fields are accepted for telemetry compatibility but **never execute motors**. Movement exclusively uses authenticated `/control` with the lease/watchdog logic.
+
+## Runtime
+
+A dedicated 50 Hz watchdog thread owns control decisions under a lock shared with command/pose ingestion. It never waits on network writes while holding that lock. GPIO errors latch a fault, attempt stop, and require a server restart. Ctrl+C attempts stop and closes Drive. A crash/power failure cannot be handled by a Python watchdog: retain the physical motor-power kill switch. Run one GPIO-owning process; do not run the teammate's demo sequence concurrently.

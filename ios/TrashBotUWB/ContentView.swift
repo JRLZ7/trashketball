@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var game = GameStore()
     @AppStorage("role") private var role = "User"
     @AppStorage("receiver") private var receiver = ""
+    @AppStorage("driveSpeed") private var driveSpeed = 50
     @State private var token = ""
     @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
@@ -28,6 +29,7 @@ struct ContentView: View {
         .onReceive(clock) { _ in if !isRobot { game.tick() } }
         .onChange(of: game.round) { _, value in if !isRobot { model.publishRound(value) } }
         .onChange(of: scenePhase) { _, phase in
+            if phase != .active { model.stopMotion() }
             if phase == .background { model.stop() }
         }
     }
@@ -138,20 +140,50 @@ struct ContentView: View {
                         capsule(!fresh ? "WAITING FOR TRACKING" : bearing == nil ? "DISTANCE ONLY" : "LIVE POSITION", color: bearing == nil ? orange : .green)
                     }.card()
                 }
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack { Text("Bring the basket to you").font(.title3.bold()); Spacer(); capsule("DRIVE OFFLINE", color: .gray) }
-                    if !isRobot {
-                        Button { model.sendIntent(action: "summon", targetMeters: round.targetMeters) } label: {
-                            Label("Summon · stop \(round.targetMeters)m away", systemImage: "location.fill").frame(maxWidth: .infinity)
-                        }.buttonStyle(ActionStyle()).disabled(!model.connected)
-                        Button { model.sendIntent(action: "stop", targetMeters: round.targetMeters) } label: {
-                            Label("Request stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
-                        }.buttonStyle(.bordered).tint(.red).disabled(!model.connected)
-                    }
-                    Text(model.intentStatus).font(.footnote).foregroundStyle(.secondary)
-                    Text("Requests reach the can’s phone. Motor control is awaiting integration; this is not a physical emergency stop.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }.card()
+                TimelineView(.periodic(from: .now, by: 0.2)) { context in
+                    let live = model.driveIsLive(at: context.date)
+                    let ready = live && model.driveStatus?.enabled == true && model.canControlPi
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Text(isRobot ? "Motor status" : "Move the basket").font(.title3.bold())
+                            Spacer()
+                            capsule(live ? (model.driveStatus?.state.uppercased() ?? "OFFLINE") : "OFFLINE", color: ready ? .green : .gray)
+                        }
+                        Text(live ? model.driveStatus?.message ?? "Waiting for Pi" : "Connect to the Pi to enable driving.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        if !isRobot {
+                            Text("Hold an arrow to drive. Release to stop.").font(.footnote).foregroundStyle(.secondary)
+                            HStack {
+                                Text("Speed").font(.subheadline)
+                                Slider(value: Binding(get: { Double(driveSpeed) }, set: { driveSpeed = Int($0) }), in: 20...70, step: 5)
+                                    .disabled(model.activeAction != nil)
+                                Text("\(driveSpeed)%").font(.subheadline.monospacedDigit()).frame(width: 40)
+                            }
+                            VStack(spacing: 10) {
+                                holdButton("Forward", symbol: "arrow.up", action: "forward", enabled: ready)
+                                HStack(spacing: 12) {
+                                    holdButton("Left", symbol: "arrow.turn.up.left", action: "left", enabled: ready)
+                                    Button { model.stopMotion() } label: {
+                                        Image(systemName: "stop.fill").font(.title2.bold()).frame(width: 64, height: 64)
+                                    }.buttonStyle(.borderedProminent).tint(.red).disabled(!model.running)
+                                    holdButton("Right", symbol: "arrow.turn.up.right", action: "right", enabled: ready)
+                                }
+                                holdButton("Reverse", symbol: "arrow.down", action: "reverse", enabled: ready)
+                            }.frame(maxWidth: .infinity)
+                            Divider()
+                            Button { model.sendIntent(action: "summon", targetMeters: round.targetMeters, speed: min(driveSpeed, 50)) } label: {
+                                Label("Summon · stop \(round.targetMeters)m away", systemImage: "location.fill").frame(maxWidth: .infinity)
+                            }.buttonStyle(ActionStyle()).disabled(!ready || model.driveStatus?.summonReady != true || !model.connected)
+                            if ready && model.driveStatus?.summonReady != true {
+                                Text("Manual drive is ready. Summon unlocks after the mounted bearing is calibrated on the Pi.").font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        if let error = model.driveError {
+                            Label(error, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.orange)
+                        }
+                        Text("Pi stops after 0.3 s without commands. Keep the arena clear and the physical kill switch accessible.").font(.footnote).foregroundStyle(.secondary)
+                    }.card()
+                }
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Tracking guidance", systemImage: "viewfinder").font(.headline)
                     Text(model.convergence).font(.subheadline)
@@ -160,6 +192,7 @@ struct ContentView: View {
                 }.card()
             }.padding(20)
         }.background(ink).toolbar(.hidden, for: .navigationBar)
+            .onDisappear { model.stopMotion() }
     }
 
     private var setup: some View {
@@ -174,11 +207,11 @@ struct ContentView: View {
                 Toggle("Camera-assisted bearing", isOn: $model.cameraAssistance)
                     .disabled(model.running || !NISession.deviceCapabilities.supportsCameraAssistance)
             }
-            Section("2 · Raspberry Pi · optional") {
+            Section("2 · Raspberry Pi connection") {
                 TextField("http://192.168.1.20:5001", text: $receiver)
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(model.running)
                 SecureField("API token", text: $token).disabled(model.running)
-                Text("Leave the URL empty for phone-only play. Tokens stay in memory; enter again after relaunch.").font(.footnote)
+                Text("For driving, enter the same Pi URL and API token on both phones. Leave blank for score-only play. Tokens stay in memory.").font(.footnote)
             }
             Section("3 · Connect both phones") {
                 Button(model.running ? "Disconnect" : "Connect phones", systemImage: model.running ? "xmark.circle" : "antenna.radiowaves.left.and.right") {
@@ -198,6 +231,22 @@ struct ContentView: View {
                 }
             }
         }.scrollContentBackground(.hidden).background(ink).navigationTitle("Get connected")
+    }
+
+    private func holdButton(_ title: String, symbol: String, action: String, enabled: Bool) -> some View {
+        VStack(spacing: 5) {
+            Image(systemName: symbol).font(.title2.bold())
+            Text(title).font(.caption.weight(.semibold))
+        }
+        .frame(width: 76, height: 66)
+        .foregroundStyle(enabled ? .white : .gray)
+        .background(model.activeAction == action ? orange : panel.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.15)))
+        .onLongPressGesture(minimumDuration: 0.01, maximumDistance: 30, pressing: { pressed in
+            if pressed && enabled { model.beginMotion(action: action, speed: driveSpeed) }
+            else if model.activeAction == action { model.stopMotion() }
+        }, perform: {})
+        .accessibilityLabel("Hold to drive " + title.lowercased())
     }
 
     private func capsule(_ text: String, color: Color) -> some View {

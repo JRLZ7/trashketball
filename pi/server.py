@@ -1,4 +1,7 @@
-"""Trashketball telemetry LAN receiver. No dependencies and no GPIO/motor code."""
+"""Authenticated telemetry and motor bridge for the teammate-maintained Drive API."""
+import argparse
+from pathlib import Path
+import sys
 import hmac
 import json
 import math
@@ -7,6 +10,10 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from controller import Controller, MotionError
+
+controller = Controller()
+control_lock = threading.RLock()
 latest = {}
 lock = threading.Lock()
 TOKEN = os.environ.get('TRASHBOT_TOKEN', '')
@@ -22,6 +29,10 @@ def validate(data):
     if data.get('role') not in ('robot', 'user') or type(data.get('fresh')) is not bool:
         return False
     if not isinstance(data.get('device_id'), str) or not 1 <= len(data['device_id']) <= 100:
+        return False
+    if data.get('peer_connected') is not None and type(data['peer_connected']) is not bool:
+        return False
+    if data.get('tracking_session_id') is not None and (not isinstance(data['tracking_session_id'], str) or not 1 <= len(data['tracking_session_id']) <= 100):
         return False
     angle = data.get('horizontal_angle_rad')
     if angle is not None and (not valid_number(angle) or abs(angle) > math.pi):
@@ -81,7 +92,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/health':
-            return self.reply(200, {'ok': True, 'motors_enabled': False})
+            with control_lock:
+                body = {'ok': True, 'motors_enabled': controller.drive is not None}
+            return self.reply(200, body)
+        if self.path == '/status':
+            if not self.authorized():
+                return self.reply(401, {'error': 'unauthorized'})
+            with control_lock:
+                body = {'ok': True, 'drive': controller.status()}
+            return self.reply(200, body)
         if self.path != '/latest':
             return self.reply(404, {'error': 'not found'})
         if not self.authorized():
@@ -101,7 +120,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, result)
 
     def do_POST(self):
-        if self.path != '/measurements':
+        if self.path not in ('/measurements', '/control'):
             return self.reply(404, {'error': 'not found'})
         if not self.authorized():
             return self.reply(401, {'error': 'unauthorized'})
@@ -110,14 +129,31 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 65536:
                 return self.reply(413, {'error': 'body must be 1–65536 bytes'})
             data = json.loads(self.rfile.read(length))
-            if not validate(data):
+            if self.path == '/measurements' and not validate(data):
                 return self.reply(400, {'error': 'invalid measurement'})
         except (ValueError, UnicodeError):
             return self.reply(400, {'error': 'invalid JSON or content length'})
-        with lock:
-            latest[data['role']] = (data, time.monotonic())
-        print(json.dumps(data, allow_nan=False), flush=True)
-        self.reply(200, {'ok': True, 'motors_enabled': False})
+        response_code = 200
+        response_error = None
+        with control_lock:
+            try:
+                if self.path == '/control':
+                    controller.control(data)
+                else:
+                    controller.ingest(data)
+                drive_status = controller.status()
+            except MotionError as error:
+                response_code, response_error = 409, str(error)
+                drive_status = controller.status()
+            except Exception:
+                response_code, response_error = 503, 'Motor write failed; check Pi server'
+                drive_status = controller.status()
+        if response_error:
+            return self.reply(response_code, {'error': response_error, 'drive': drive_status})
+        if self.path == '/measurements':
+            with lock:
+                latest[data['role']] = (data, time.monotonic())
+        self.reply(200, {'ok': True, 'drive': drive_status})
 
     def log_message(self, *_):
         pass  # Measurements are printed above; never log the API token.
@@ -127,8 +163,59 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(5)
 
 
-if __name__ == '__main__':
+def main():
+    global controller
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--drive', action='store_true', help='Enable real Pi GPIO motors')
+    parser.add_argument('--bearing-calibrated', action='store_true', help='Allow summon after verifying mount and bearing sign')
+    parser.add_argument('--bearing-sign', type=int, choices=(-1, 1), default=1)
+    parser.add_argument('--bearing-offset-deg', type=float, default=0)
+    parser.add_argument('--invert-left', action='store_true')
+    parser.add_argument('--invert-right', action='store_true')
+    args = parser.parse_args()
     if len(TOKEN) < 16:
         raise SystemExit('Set TRASHBOT_TOKEN to a random secret of at least 16 characters.')
-    print('Measurement-only receiver on :5001. Motors disabled.', flush=True)
-    ThreadingHTTPServer(('0.0.0.0', 5001), Handler).serve_forever()
+    if not math.isfinite(args.bearing_offset_deg):
+        raise SystemExit('Bearing offset must be finite')
+    drive = None
+    if args.drive:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'Firmware' / 'PI'))
+        from trashketball import Drive
+        drive = Drive()
+    stopped = threading.Event()
+    server = None
+    try:
+        controller = Controller(drive, calibrated=args.bearing_calibrated,
+                                bearing_sign=args.bearing_sign,
+                                bearing_offset=math.radians(args.bearing_offset_deg),
+                                invert_left=args.invert_left, invert_right=args.invert_right)
+        server = ThreadingHTTPServer(('0.0.0.0', 5001), Handler)
+        server.daemon_threads = True
+        def watchdog():
+            while not stopped.wait(0.02):
+                with control_lock:
+                    try:
+                        controller.tick()
+                    except Exception as error:
+                        print('Motor fault:', type(error).__name__, flush=True)
+        thread = threading.Thread(target=watchdog, daemon=True)
+        thread.start()
+        print('Trashketball :5001 · motors ' + ('ENABLED' if drive else 'disabled'), flush=True)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stopped.set()
+        with control_lock:
+            try:
+                controller.stop('Server shutdown')
+            finally:
+                controller.drive = None
+                if drive:
+                    drive.close()
+        if server:
+            server.server_close()
+
+
+if __name__ == '__main__':
+    main()
