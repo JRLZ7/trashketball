@@ -6,7 +6,7 @@ from trashketball import Drive
 
 
 def run_sequence(drive: Drive) -> None:
-    drive.set_motor_control(True, 70, True, 70)  # forward
+    drive.set_motor_control(True, 100, True, 100)  # forward
     time.sleep(2)
     drive.set_motor_control()
     time.sleep(0.1)
@@ -18,7 +18,7 @@ def run_sequence(drive: Drive) -> None:
     time.sleep(1)
     drive.set_motor_control()
     time.sleep(0.1)
-    drive.set_motor_control(False, 70, False, 70)  # reverse
+    drive.set_motor_control(False, 100, False, 100)  # reverse
     time.sleep(2)
     drive.set_motor_control()  # stop
     time.sleep(1)

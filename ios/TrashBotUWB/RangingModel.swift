@@ -176,11 +176,11 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     func driveIsLive(at now: Date) -> Bool {
         driveUpdated.map { now.timeIntervalSince($0) < 1 } ?? false
     }
-    func sendIntent(action: String, targetMeters: Int, speed: Int = 80) {
+    func sendIntent(action: String, targetMeters: Int, speed: Int = 100) {
         if action == "stop" { stopMotion(); return }
         beginMotion(action: action, targetMeters: targetMeters, speed: speed)
     }
-    func beginMotion(action: String, targetMeters: Int = 2, speed: Int = 80) {
+    func beginMotion(action: String, targetMeters: Int = 2, speed: Int = 100) {
         guard !remoteApproach else { driveError = "Guided approach is active on the can phone. Stop it before manual driving."; return }
         guard !inspectionActive, !remoteInspection else { driveError = "Close LiDAR Lab on the can phone before driving."; return }
         guard !isRobot, running, endpoint != nil else { driveError = "Enter the Pi URL and token, then connect."; return }

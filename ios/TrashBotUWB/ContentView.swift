@@ -11,7 +11,7 @@ struct ContentView: View {
     @StateObject private var game = GameStore()
     @AppStorage("role") private var role = "User"
     @AppStorage("receiver") private var receiver = ""
-    @AppStorage("driveSpeedV2") private var driveSpeed = 80
+    @AppStorage("driveSpeedV3") private var driveSpeed = 100
     private let token = "12345"
     @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
@@ -187,7 +187,7 @@ struct ContentView: View {
                                 holdButton("Reverse", symbol: "arrow.down", action: "reverse", enabled: ready)
                             }.frame(maxWidth: .infinity)
                             Divider()
-                            Button { model.sendIntent(action: "summon", targetMeters: round.targetMeters, speed: min(driveSpeed, 80)) } label: {
+                            Button { model.sendIntent(action: "summon", targetMeters: round.targetMeters, speed: driveSpeed) } label: {
                                 Label("Legacy Summon · \(round.targetMeters)m away", systemImage: "location.fill").frame(maxWidth: .infinity)
                             }.buttonStyle(ActionStyle()).disabled(!ready || model.driveStatus?.summonReady != true || !model.connected)
                             Text(model.remoteApproach ? "Can phone is running guided approach. Stop remains available." : "Legacy Summon has no LiDAR obstacle checks. Use Guided approach in Locate on the can phone for the new mode.")
@@ -256,6 +256,10 @@ struct ContentView: View {
                 }
             }
             Text(model.approachNote).font(.footnote).foregroundStyle(.secondary)
+            if model.approachActive, let drive = model.driveStatus {
+                LabeledContent("Pi motor command", value: String(format:"L %.0f%% · R %.0f%%",drive.left,drive.right))
+                    .font(.subheadline.monospacedDigit())
+            }
             HStack {
                 Button { model.beginApproach() } label: {
                     Label("Start guided approach", systemImage: "location.fill").frame(maxWidth: .infinity)
@@ -264,7 +268,7 @@ struct ContentView: View {
                 Button("Stop", role: .destructive) { model.stopMotion() }
                     .buttonStyle(.bordered).disabled(!model.running)
             }
-            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Driving uses 50% forward, 45% detour/turn commands and the Pi's existing PWM cap. Side/rear blind spots remain; keep space around the can for pivots.")
+            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Driving sends 100% commands for forward, detours and turns, scaled by the Pi driver's PWM maximum. Side/rear blind spots remain; keep space around the can for pivots.")
                 .font(.caption).foregroundStyle(.secondary)
         }.card()
     }

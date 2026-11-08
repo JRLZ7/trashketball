@@ -17,7 +17,7 @@ Use **Locate → Guided approach on the can phone**. The iPhone uses the existin
 1. Set the Pi URL/token 12345 on both phones, connect, and run the existing `python3 pi/server.py`. The bridge must be enabled and stopped. Release any previous Lab inspection hold first.
 2. Verify wheel polarity and phone mounting with manual controls: phone forward/right must match chassis forward/right. Use a controlled arena with clearance around the whole can, a spotter, and the physical motor-power kill switch.
 3. Start preview on the can phone. When it proposes a valid movement, tap **Start guided approach**. This explicitly enables motor commands; preview does not enable them automatically.
-4. Output is fixed at 50% normal forward and 45% detour forward/pivot in the driver's command scale, still subject to its 130/255 duty cap. These are not measured speed or voltage. Validate deadband, traction and stopping distance on hardware.
+4. Output is 100% normal forward, detour forward and pivot in the driver's command scale, subject to the team-approved 150/255 duty cap. These are not measured speed or voltage. Validate deadband, traction and stopping distance on hardware.
 5. A blocked/unknown chosen path, arrival, stale sensors or command acknowledgements, AR reset, fault/disconnection, Stop, leaving Locate, opening Lab, or app background ends the run. Recovery only changes preview advice; Start must be pressed again. Player manual/legacy Summon starts are disabled while guided driving is announced active; Player Stop remains available.
 
 ## Local planning rules
@@ -52,3 +52,12 @@ Lab runs the floor/map pipeline without the avoidance fan. Only Guided approach 
 A supported current floor is preferred over unrelated tracked plane anchors. Anchor updates must be corroborated by broad horizontal depth samples near their height; if the old reference has no support, the detector can still recover to a genuinely measured surface. Lab now exposes floor-point percentage, depth-processing milliseconds and camera-frame age. Floor percentage is diagnostic only; it is not a minimum floor-to-object ratio for movement. Check these alongside floor source and measured camera height when debugging red/orange floor returns.
 
 Moving the phone up/down should change the measured camera height while the same real floor keeps its classification. UWB direction convergence is separate from automatic floor initialization. A stale incorrect floor reference can now recover upward after expiry, rather than remaining locked until an AR reset.
+
+
+## Guidance-to-Pi actuation and maximum output
+
+Enter the Pi URL in Connect on both phones, run `python3 pi/server.py` on the Pi, and use Locate on the can phone. Start Preview guidance, then **Start guided approach** when the motor bridge is connected and stopped. This sends the chosen forward/left/right commands to authenticated `/control` with increasing sequences and renewals every 100 ms; stop/arrival/blocked guidance sends Stop. The live Pi motor-command readout shows requested left/right percentages, not encoder-measured motion.
+
+All guided movement requests are 100%. Manual defaults migrate to 100% (the slider can deliberately lower it), and Legacy Summon no longer applies separate forward/pivot reductions. Driver `MAX_DUTY` is **150/255** for the confirmed 6 V motors / 12 V supply: 100% means this capped duty, not full 12 V PWM. Direct calls above 100% are clamped; Stop always disables enable pins. Do not raise the hardware duty cap above 150/255. Actual terminal voltage depends on supply, driver losses and load; this is not a regulated voltage setting.
+
+Update the Python/driver files on Pi and restart its server as well as rebuilding both phone apps. First verify wheel signs and stopping with wheels lifted; the higher command output changes turn rate and stopping distance, so physical avoidance behavior must be checked again before a floor run.

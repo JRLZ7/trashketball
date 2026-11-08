@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from gpiozero import DigitalOutputDevice, Motor, PWMOutputDevice
 from gpiozero.mixins import SourceMixin
 
-# 12 V supply, motors rated 6 V. 100% command speed is duty 130/255.
-MAX_DUTY = 130 / 255
+# 12 V supply, motors rated 6 V. Team-approved ceiling: 150/255 PWM.
+# A 100% API command reaches this cap, never unrestricted/full-supply PWM.
+MAX_DUTY = 150 / 255
 PWM_FREQUENCY_HZ = 1000
 
 
@@ -48,7 +49,7 @@ class Drive:
         right_forward: bool = True,
         right_speed: int = 0,
     ) -> None:
-        """Match setMotorControl: percent 0-100, constrained, then scaled by 130/255.
+        """Match setMotorControl: percent 0-100, constrained, then scaled by 150/255.
 
         A no-arg call coasts both motors (enable off).
         """

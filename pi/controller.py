@@ -135,7 +135,7 @@ class Controller:
             raise MotionError('Another phone controls the robot; stop it first')
         if data['id'] in self.closed_ids:
             raise MotionError('Command ended; release and issue a new command')
-        speed = data.get('speed', 25)
+        speed = data.get('speed', 100)
         if type(speed) not in (int, float) or not math.isfinite(speed) or not 0 < speed <= 100:
             raise MotionError('Speed must be greater than zero and at most 100 percent')
         target = data.get('targetMeters', 2)
@@ -149,7 +149,7 @@ class Controller:
         if self.command and self.command['id'] == data['id']:
             # Lease renewal cannot mutate an existing command.
             if any(self.command[k] != data.get(k, default) for k, default in
-                   [('action', None), ('speed', 25), ('targetMeters', 2)]):
+                   [('action', None), ('speed', 100), ('targetMeters', 2)]):
                 raise MotionError('Use a new ID to change movement')
         elif self.command:
             self.stop('New command')
@@ -177,13 +177,13 @@ class Controller:
             angle = self.sign * p['angle'] + self.offset
             angle = math.atan2(math.sin(angle), math.cos(angle))
             if abs(angle) > 0.22:
-                turn = min(speed, 70)
+                turn = speed
                 left, right = (turn, -turn) if angle > 0 else (-turn, turn)
                 self.state, self.message = 'turning', 'Turning toward player'
             else:
-                base = min(speed, 80, max(45, (p['distance'] - self.command['targetMeters']) * 18))
-                correction = angle * 25
-                left, right = max(0, min(80, base + correction)), max(0, min(80, base - correction))
+                # Full requested output on both wheels; bearing correction uses
+                # the pivot branch rather than silently reducing either motor.
+                left, right = speed, speed
                 self.state, self.message = 'approaching', 'Approaching player'
         else:
             left, right = {'forward': (speed, speed), 'reverse': (-speed, -speed),

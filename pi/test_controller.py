@@ -105,6 +105,18 @@ class MotionTests(unittest.TestCase):
         self.controller.control(command)
         self.assertEqual(self.drive.outputs[-1], (100,100))
 
+    def test_summon_uses_full_requested_command_on_both_channels(self):
+        self.pose(horizontal_angle_rad=0.6)
+        turn = self.cmd('summon'); turn['speed'] = 100
+        self.controller.control(turn)
+        self.assertEqual(self.drive.outputs[-1],(100,-100))
+        self.pose(horizontal_angle_rad=0.1,distance_m=2.4)
+        self.controller.tick()
+        self.assertEqual(self.drive.outputs[-1],(100,100))
+        self.pose(distance_m=2.1)
+        self.controller.tick()
+        self.assertEqual(self.drive.outputs[-1],(0,0))
+
     def test_inspection_hold_stops_and_blocks_all_motion(self):
         self.controller.control(self.cmd())
         self.controller.set_inspection(True)

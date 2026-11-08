@@ -37,7 +37,7 @@ python3 pi/server.py
 
 Inversion/sign/offset settings live in `pi/server.py`. Set `ENABLE_SUMMON = False` there if you need to temporarily disable autonomous approach. Both phones must be paired, and the **robot phone** must supply fresh distance and bearing. Test in a clear arena at a low speed with a spotter and physical kill switch. There is no obstacle detection.
 
-Summon pivots toward the player, drives forward, and stops when the measured phone-to-phone range is within 15 cm above the selected distance. It never reverses if already too close. Slant range and mounting height affect the relationship to floor distance. Summon caps forward drive at 80% and pivots at up to 70%; hardware tuning is still required.
+Summon pivots toward the player, drives forward, and stops when the measured phone-to-phone range is within 15 cm above the selected distance. It never reverses if already too close. Slant range and mounting height affect the relationship to floor distance. Legacy Summon now uses the requested speed on both active channels (100% by default), always scaled by the driver's 150/255 cap; hardware tuning is still required.
 
 The Pi has a **300 ms command watchdog**, independent of the HTTP upload task. Summon also stops if robot tracking is older than 250 ms, loses bearing/peer connection, or changes tracking session. A stopped/expired request cannot resume itself: press Summon or a direction again. Leaving Locate, backgrounding/disconnecting the app, and releasing a manual arrow request Stop; if that request fails, the Pi watchdog expires. This is not a substitute for the physical kill switch. Stop is coast/enable-off using the existing driver.
 
@@ -51,7 +51,7 @@ Start a round on the player phone. The Pi tags each beam event with a unique ID,
 
 Scoring is enabled only during the round window. Sensor events are retained in memory (up to 256) and included in authenticated replies so short polling interruptions do not double count or lose already recorded events. Events for another round or after the deadline are ignored. Game controls require a live sensor connection to start; sensor setup errors leave driving available but scoring offline. Rebuild the app and restart the Pi server after updating.
 
-The motor speed increase uses more of the existing driver's duty range: the underlying `MAX_DUTY = 130/255` is unchanged for the documented 6 V motors on a 12 V supply. This does not change battery voltage.
+The confirmed setup is 6 V motors on a 12 V supply. The team-approved driver ceiling is now `MAX_DUTY = 150/255`. App commands of 100% scale to that ceiling; they do not bypass it or change battery voltage. Guided forward/detours/turns and the manual default now request 100%.
 
 [Sensor polarity reference](https://learn.adafruit.com/ir-breakbeam-sensors/circuitpython)
 
@@ -85,3 +85,5 @@ Measured camera mount height is **25 cm** (floor to middle camera). This now see
 Local avoidance uses a nine-heading clearance fan and short ARKit-tracked detours on the can phone. Unknown side lanes remain unavailable; the feature does not promise a route through unobserved space.
 
 Lab floor processing is isolated from guidance scans. Camera capture age (including processing delay), floor-point percentage and processing time are visible in Lab; floor anchors require supporting depth before changing the ground reference.
+
+To actuate guidance, use **Locate → Preview guidance → Start guided approach on the can phone**, with the Pi URL configured and `python3 pi/server.py` running. Update/restart the Pi code for the 150/255 PWM cap and rebuild the apps. The Pi motor-command readout shows the acknowledged left/right command percentages.

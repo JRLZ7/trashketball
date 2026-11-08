@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import threading
 import sys
@@ -108,6 +109,54 @@ class ReceiverTests(unittest.TestCase):
             self.assertEqual(self.call('/status')[1]['drive']['state'], 'stopped')
         finally:
             receiver.controller = Controller()
+
+    def test_guidance_http_to_real_driver_at_maximum_command(self):
+        try:
+            from gpiozero import Device
+            from gpiozero.pins.mock import MockFactory, MockPWMPin
+        except ImportError:
+            self.skipTest('gpiozero needed for GPIO integration')
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'Firmware' / 'PI'))
+        from trashketball import Drive
+        from trashketball.drive import MAX_DUTY
+        from controller import Controller
+        fixture = os.environ.get('TRASHKETBALL_SWIFT_MOTOR_FIXTURE')
+        if fixture:
+            commands = json.loads(Path(fixture).read_text())
+        else:
+            commands = [dict(id='guidance-'+action, client_id='robot-guidance', sequence=i+1,
+                             sent_at=0, action=action, speed=0 if action == 'stop' else 100, targetMeters=1)
+                        for i, action in enumerate(('forward', 'left', 'right', 'stop'))]
+        self.assertEqual([c['action'] for c in commands], ['forward', 'left', 'right', 'stop'])
+        previous_factory, previous_controller = Device.pin_factory, receiver.controller
+        Device.pin_factory = MockFactory(pin_class=MockPWMPin)
+        clock = [1000.0]
+        try:
+            with Drive() as drive:
+                receiver.controller = Controller(drive, clock=lambda: clock[0])
+                expected = {'forward':(1,1), 'left':(-1,1), 'right':(1,-1), 'stop':(0,0)}
+                for command in commands:
+                    command['sent_at'] = time.time()
+                    status, reply = self.call('/control', command)
+                    self.assertEqual(status, 200)
+                    left, right = expected[command['action']]
+                    self.assertEqual((reply['drive']['left'],reply['drive']['right']), (left*100,right*100))
+                    self.assertAlmostEqual(drive._left.value, left*MAX_DUTY)
+                    self.assertAlmostEqual(drive._right.value, right*MAX_DUTY)
+                    self.assertLessEqual(abs(drive._left.value),150/255)
+                    self.assertLessEqual(abs(drive._right.value),150/255)
+                    self.assertEqual(reply['drive']['commandID'], None if command['action'] == 'stop' else command['id'])
+                move = {**commands[0], 'id':'watchdog-max', 'sequence':5, 'sent_at':time.time()}
+                self.assertEqual(self.call('/control', move)[0],200)
+                clock[0] += 0.301
+                receiver.controller.tick()
+                self.assertEqual((drive._left.value,drive._right.value),(0,0))
+                self.assertEqual(receiver.controller.state,'timed_out')
+                self.assertEqual(self.call('/control',{**move,'sequence':6,'sent_at':time.time()})[0],409)
+        finally:
+            receiver.controller = previous_controller
+            Device.pin_factory.close()
+            Device.pin_factory = previous_factory
 
     def test_beam_events_in_phone_reply(self):
         from scoring import BeamScorer, SWIFT_EPOCH

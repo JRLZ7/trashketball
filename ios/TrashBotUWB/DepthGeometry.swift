@@ -286,10 +286,10 @@ enum GuidedApproach {
         // Turn until within ~6°, then allow forward motion until error exceeds ~13°.
         let turning = previousAction == "left" || previousAction == "right"
         if abs(angle) > (turning ? 0.10 : 0.22) {
-            return ApproachDecision(action: angle > 0 ? "right" : "left", speed: 45,
+            return ApproachDecision(action: angle > 0 ? "right" : "left", speed: 100,
                                     message: angle > 0 ? "Turn right toward player" : "Turn left toward player")
         }
-        return ApproachDecision(action: "forward", speed: 50, message: "Forward · observed lane clear")
+        return ApproachDecision(action: "forward", speed: 100, message: "Forward · observed lane clear")
     }
 }
 
@@ -459,11 +459,11 @@ struct LocalAvoidanceNavigator {
         if abs(angle) > (turning ? 0.10 : 0.22) || (!forwardOpen && abs(angle) > 0.02) {
             let side = angle > 0 ? "right" : "left"
             let text = String(format:"%@turn %@ %.0f°",avoiding ? "Avoid obstacle · " : "",side,abs(degrees))
-            return ApproachDecision(action:angle > 0 ? "right" : "left",speed:45,message:text,
+            return ApproachDecision(action:angle > 0 ? "right" : "left",speed:100,message:text,
                 turnDegrees:degrees,selectedLaneDegrees:lane.angle*180/Float.pi,avoiding:avoiding)
         }
         guard forwardOpen else { return ApproachDecision(message:"Stop · current forward lane is not clear") }
-        return ApproachDecision(action:"forward",speed:avoiding ? 45 : 50,
+        return ApproachDecision(action:"forward",speed:100,
             message:avoiding ? "Detour forward · rechecking clearance" : "Forward · path toward player clear",
             turnDegrees:0,selectedLaneDegrees:lane.angle*180/Float.pi,avoiding:avoiding)
     }

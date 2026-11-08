@@ -95,9 +95,9 @@ func guidance(distance: Float? = 3, angle: Float? = 0, age: Double? = 0.01, conn
         depthAge: depthAge, trackingNormal: normal, floorReady: floorReady, corridor: corridor,
         targetMeters: 1, previousAction: previous)
 }
-assert(guidance().action == "forward" && guidance().speed == 50)
+assert(guidance().action == "forward" && guidance().speed == 100)
 assert(guidance(angle: 0.5).action == "right" && guidance(angle: -0.5).action == "left")
-assert(guidance(angle: 0.5).speed == 45)
+assert(guidance(angle: 0.5).speed == 100)
 assert(guidance(angle: 0.15, previous: "right").action == "right", "Turn hysteresis")
 assert(guidance(angle: 0.05, previous: "right").action == "forward")
 assert(guidance(angle: 0.15, previous: "forward").action == "forward")
@@ -376,3 +376,5 @@ assert(staleWrongFloor.update(candidate:actualGround,trackingNormal:true,timesta
 for time in [1.8,2.0,2.2] { _ = staleWrongFloor.update(candidate:actualGround,trackingNormal:true,timestamp:time) }
 assert(abs(staleWrongFloor.y!) < 0.001, "An expired wrong plane must not permanently reject the actual higher floor")
 print("Expired wrong floor can recover automatically without UWB recalibration")
+
+assert(detourChoice.speed == 100 && afterTurn.speed == 100 && rejoined.speed == 100, "Guidance sends maximum commands during turns, detours and direct approach")

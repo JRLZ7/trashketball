@@ -46,7 +46,7 @@ GPIO pinout on the can. Every number below is a BCM GPIO, not a physical header 
 - GPIO 5: ultrasonic trigger
 - GPIO 6: ultrasonic echo
 
-A command speed of 100% is written as duty `130/255` (`MAX_DUTY`). Raising `MAX_DUTY` can overvolt the motors on the 12 V supply.
+A command speed of 100% is written as duty `150/255` (`MAX_DUTY`). The team explicitly selected this ceiling for the current 6 V motors / 12 V supply; do not raise it above 150/255. PWM duty is not a regulated motor voltage.
 
 ## API
 
@@ -60,7 +60,7 @@ from trashketball import Drive, DrivePins
 drive.set_motor_control(left_forward=True, left_speed=0, right_forward=True, right_speed=0)
 ```
 
-Each side takes a direction bool and a speed as a percent from 0 to 100. Values outside that range are clamped, then scaled by `130/255`. A speed of 0 turns that channel's enable off. A call with no arguments coasts both motors. `close()` releases the pins. A `with Drive() as drive:` block calls `close()` when it exits.
+Each side takes a direction bool and a speed as a percent from 0 to 100. Values outside that range are clamped, then scaled by `150/255`. A speed of 0 turns that channel's enable off. A call with no arguments coasts both motors. `close()` releases the pins. A `with Drive() as drive:` block calls `close()` when it exits.
 
 ```python
 from trashketball import Drive, DrivePins
@@ -75,12 +75,12 @@ pins = DrivePins(
 )
 
 with Drive(pins) as drive:
-    drive.set_motor_control(left_forward=True, left_speed=70, right_forward=True, right_speed=70)
+    drive.set_motor_control(left_forward=True, left_speed=100, right_forward=True, right_speed=100)
     drive.set_motor_control()
     drive.set_motor_control(left_forward=True, left_speed=100, right_forward=False, right_speed=100)
 ```
 
-That example builds a `Drive` on the harness pins above (motor 1 on the left channel, motor 2 on the right), drives both sides forward at 70%, coasts, then spins by driving the sides in opposite directions. `Drive()` uses those same motor pins.
+That example builds a `Drive` on the harness pins above (motor 1 on the left channel, motor 2 on the right), drives both sides forward at 100%, coasts, then spins by driving the sides in opposite directions. `Drive()` uses those same motor pins.
 
 `run_sequence` in `test_drive.py` is the full timed demo. It drives forward for 2 seconds, coasts for 0.1 seconds, spins in place for 1 second, coasts for 1 second, spins the other way for 1 second, coasts for 0.1 seconds, reverses for 2 seconds, then coasts for 1 second. Those coasts match the ESP32 `loop()`.
 
@@ -88,4 +88,4 @@ That example builds a `Drive` on the harness pins above (motor 1 on the left cha
 
 The root app bridge (`python3 pi/server.py` from the repository root) reads BCM GPIO 24 with pull-up, defaults to LOW = broken, and debounces basket events during timed rounds. Startup enables motors, beam scoring and Summon. Set `BEAM_ACTIVE_HIGH = True` in `pi/server.py` if your module's output is inverted, `ENABLE_MOTORS = False` for scoring-only operation, or `ENABLE_BEAM = False` for motor-only testing. The API token is `12345`, preset in the app and server; no flags are needed. Play shows automatic scoring readiness and counts one point per detected basket; misses do not change the count.
 
-The app now defaults to 80% command speed, allows 100% manual command, and caps autonomous forward command at 80%. These percentages are still scaled by this driver's `130/255` PWM cap. No motor pin assignments or MAX_DUTY values were changed.
+The app now defaults to 100% manual command, and guided forward/detours/pivots use 100%. Legacy Summon also uses the requested speed on both active channels. This driver scales 100% to the team-approved `MAX_DUTY = 150/255`, and clamps excessive percentages to that ceiling. Motor pin assignments are unchanged. The 12 V supply is not applied as unrestricted 100% PWM.
