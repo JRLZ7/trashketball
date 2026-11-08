@@ -130,3 +130,67 @@ struct BeamStatus: Codable, Equatable {
     var breakCount: Int
     var events: [BeamEvent]
 }
+
+// Only intent/status crosses phones. The mounted phone remains the navigation authority.
+struct GuidanceRequest: Codable {
+    enum Action: String, Codable { case preview, start, endPreview, stop }
+    var id = UUID()
+    var action: Action
+    var target: Int
+    var sentAt = Date().timeIntervalSince1970
+    func isValid(at now: TimeInterval) -> Bool {
+        action == .stop || ((1...3).contains(target) && sentAt.isFinite &&
+            now-sentAt >= -2 && now-sentAt < 2)
+    }
+}
+
+struct GuidanceStatus: Codable {
+    var sequence: Int
+    var requestID: UUID?
+    var previewing: Bool
+    var active: Bool
+    var paused: Bool
+    var target: Int
+    var decision: ApproachDecision
+    var note: String
+    var canPreview: Bool
+    var canStart: Bool
+    var floor: String
+}
+
+// A brief missing measurement stops the motors without immediately disarming navigation.
+// Resume requires three distinct, safe depth frames AND distinct UWB updates after the hold.
+struct GuidanceSensorHold {
+    private(set) var began: TimeInterval?
+    private var stableFrames = 0
+    private var lastDepth: TimeInterval?
+    private var lastUWB: TimeInterval?
+    mutating func reset() { self = Self() }
+    mutating func pause(at now: TimeInterval) {
+        if began == nil { began = now }
+        stableFrames = 0; lastDepth = nil; lastUWB = nil
+    }
+    func expired(at now: TimeInterval) -> Bool { began.map { now-$0 >= 2 } ?? false }
+    mutating func ready(depth: TimeInterval, uwb: TimeInterval) -> Bool {
+        guard let began, depth > began, uwb > began else { return false }
+        guard lastDepth != depth, lastUWB != uwb else { return false }
+        lastDepth = depth; lastUWB = uwb; stableFrames += 1
+        return stableFrames >= 3
+    }
+}
+
+// A successful HTTP response alone does not prove the Pi owns this live command.
+enum GuidancePiConfirmation {
+    static func movement(_ command: MotionCommand, reply: PiReply, httpCode: Int?, failed: Bool,
+                         now: TimeInterval) -> Bool {
+        let age = now-command.sent_at
+        guard age.isFinite, age >= 0, age < 0.25, !failed, httpCode == 200,
+              reply.error == nil, let status = reply.drive else { return false }
+        return status.enabled && status.state == "manual" && status.commandID == command.id
+    }
+    static func stopped(reply: PiReply, httpCode: Int?, failed: Bool) -> Bool {
+        guard !failed, httpCode == 200, reply.error == nil, let status = reply.drive else { return false }
+        return status.enabled && status.state == "stopped" && status.commandID == nil &&
+            status.left == 0 && status.right == 0
+    }
+}

@@ -378,3 +378,22 @@ assert(abs(staleWrongFloor.y!) < 0.001, "An expired wrong plane must not permane
 print("Expired wrong floor can recover automatically without UWB recalibration")
 
 assert(detourChoice.speed == 100 && afterTurn.speed == 100 && rejoined.speed == 100, "Guidance sends maximum commands during turns, detours and direct approach")
+
+// A bearing near a lane boundary must not become a quantized 15-degree pivot.
+navigator.reset()
+let slightAngle: Float = 0.14
+let slightApproach = navigation(&navigator,scan:openScan,angle:slightAngle)
+assert(slightApproach.action == "forward", "An 8-degree player bearing is within forward tolerance even when nearest clearance lane is 15 degrees")
+navigator.reset()
+let exactApproach = navigation(&navigator,scan:openScan,angle:0.34)
+assert(exactApproach.action == "right")
+assert(abs(exactApproach.turnDegrees!-0.34*180/Float.pi) < 0.001, "Turn guidance must report the measured bearing rather than the lane center")
+navigator.reset()
+assert(navigation(&navigator,scan:openScan,angle:nil).recoverableSensorWait)
+navigator.reset()
+assert(navigation(&navigator,scan:openScan,depthAge:1).recoverableSensorWait)
+navigator.reset()
+assert(!navigation(&navigator,scan:openScan,distance:1).recoverableSensorWait, "Arrival is final")
+navigator.reset()
+assert(!navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes,nearestRadialObstacle:0.2)).recoverableSensorWait, "A blocked route must not auto-resume")
+print("Measured-bearing steering and recoverable sensor-gap classification passed")

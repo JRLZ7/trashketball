@@ -34,8 +34,16 @@ final class OfflineLocateTests: XCTestCase {
     }
 
     func testGuidedApproachCannotStartWithoutSensors() {
+        checkGuidanceUnavailable(role:"Robot")
+    }
+
+    func testPlayerHasGuidanceControlsWithoutConnections() {
+        checkGuidanceUnavailable(role:"User")
+    }
+
+    private func checkGuidanceUnavailable(role:String) {
         let app = XCUIApplication()
-        app.launchArguments = ["-role", "Robot"]
+        app.launchArguments = ["-role", role]
         app.launch()
         app.tabBars.buttons["Locate"].tap()
         let preview = app.buttons["Preview guidance"]

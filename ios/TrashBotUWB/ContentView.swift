@@ -155,7 +155,7 @@ struct ContentView: View {
                         capsule(!fresh ? "WAITING FOR TRACKING" : bearing == nil ? "DISTANCE ONLY" : "LIVE POSITION", color: bearing == nil ? orange : .green)
                     }.card()
                 }
-                if isRobot { guidedApproachCard }
+                guidedApproachCard
                 TimelineView(.periodic(from: .now, by: 0.2)) { context in
                     let live = model.driveIsLive(at: context.date)
                     let ready = live && model.driveStatus?.enabled == true && model.canControlPi && !model.remoteInspection && !model.remoteApproach && !model.inspectionActive && model.driveStatus?.state != "inspection" && model.driveStatus?.state != "fault"
@@ -190,7 +190,7 @@ struct ContentView: View {
                             Button { model.sendIntent(action: "summon", targetMeters: round.targetMeters, speed: driveSpeed) } label: {
                                 Label("Legacy Summon · \(round.targetMeters)m away", systemImage: "location.fill").frame(maxWidth: .infinity)
                             }.buttonStyle(ActionStyle()).disabled(!ready || model.driveStatus?.summonReady != true || !model.connected)
-                            Text(model.remoteApproach ? "Can phone is running guided approach. Stop remains available." : "Legacy Summon has no LiDAR obstacle checks. Use Guided approach in Locate on the can phone for the new mode.")
+                            Text(model.remoteApproach ? "Can phone is running guided approach. Stop remains available." : "Legacy Summon has no LiDAR obstacle checks. Use Guided approach above to navigate with the can phone’s LiDAR.")
                                 .font(.footnote).foregroundStyle(.secondary)
                             if ready && model.driveStatus?.summonReady != true {
                                 Text("Manual drive is ready. Summon is disabled in the Pi configuration.").font(.footnote).foregroundStyle(.secondary)
@@ -210,30 +210,30 @@ struct ContentView: View {
                 }.card()
             }.padding(20)
         }.background(ink).toolbar(.hidden, for: .navigationBar)
-            .onDisappear { model.endApproachPreview(); model.stopMotion() }
+            .onDisappear { if model.activeAction != nil && !model.approachActive { model.stopMotion() } }
     }
 
     private var guidedApproachCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Guided approach").font(.title3.bold())
-            Text("Uses Locate bearing and distance with live LiDAR. Compares left/right paths and makes short detours; stops when no observed path is available.")
+            Text("Uses Locate bearing and distance with live LiDAR. Compares left/right paths and makes short detours; stops when no observed path is available. Start or stop from the player phone; keep both apps open.")
                 .font(.subheadline).foregroundStyle(.secondary)
             Picker("Stop distance", selection: $model.approachTarget) {
                 ForEach(1...3, id: \.self) { Text("\($0) m").tag($0) }
-            }.pickerStyle(.segmented).disabled(model.approachActive)
+            }.pickerStyle(.segmented).disabled(model.approachActive || model.guidancePending)
             HStack {
                 Button(model.approachPreviewing ? "End preview" : "Preview guidance") {
                     if model.approachPreviewing { model.endApproachPreview() }
                     else { model.previewApproach() }
-                }.buttonStyle(.bordered).disabled(!model.approachPreviewing && !model.canPreviewApproach)
+                }.buttonStyle(.bordered).disabled(model.guidancePending || (!model.approachPreviewing && !model.canPreviewApproach))
                 Spacer()
                 if model.approachPreviewing {
-                    Text(model.approachActive ? "DRIVING" : "PREVIEW").font(.caption.bold())
-                        .foregroundStyle(model.approachActive ? .green : orange)
+                    Text(model.approachActive ? (model.approachPaused ? "PAUSED" : "DRIVING") : "PREVIEW").font(.caption.bold())
+                        .foregroundStyle(model.approachActive && !model.approachPaused ? .green : orange)
                 }
             }
             Text(model.approachDecision.message).font(.headline)
-            if model.approachPreviewing {
+            if isRobot && model.approachPreviewing {
                 AvoidanceFanView(scan:model.lidar.snapshot.avoidance,selectedDegrees:model.approachDecision.selectedLaneDegrees)
                     .frame(height:160)
                 HStack(alignment:.top) {
@@ -255,6 +255,21 @@ struct ContentView: View {
                     Text(String(format: "First visible floor: %.2f m ahead", first)).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            if !isRobot {
+                Text("Camera, LiDAR and navigation run on the can phone. These buttons send requests to it.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Floor on can: \(model.remoteFloor)").font(.caption)
+                TimelineView(.periodic(from:.now,by:0.2)) { _ in
+                    if model.connected && !model.guidanceStatusIsFresh {
+                        Label("Waiting for live guidance status from can phone",systemImage:"wifi.exclamationmark")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                }
+                if let degrees = model.approachDecision.turnDegrees, abs(degrees) > 0.5 {
+                    Text(String(format:"Turn remaining: %.0f° %@",abs(degrees),degrees > 0 ? "right" : "left"))
+                        .font(.subheadline.monospacedDigit())
+                }
+            }
             Text(model.approachNote).font(.footnote).foregroundStyle(.secondary)
             if model.approachActive, let drive = model.driveStatus {
                 LabeledContent("Pi motor command", value: String(format:"L %.0f%% · R %.0f%%",drive.left,drive.right))
@@ -264,11 +279,11 @@ struct ContentView: View {
                 Button { model.beginApproach() } label: {
                     Label("Start guided approach", systemImage: "location.fill").frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent)
-                    .disabled(!model.approachPreviewing || model.approachActive || model.approachDecision.action == "stop" || !model.canControlPi)
+                    .disabled(!model.canStartApproach)
                 Button("Stop", role: .destructive) { model.stopMotion() }
                     .buttonStyle(.bordered).disabled(!model.running)
             }
-            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Driving sends 100% commands for forward, detours and turns, scaled by the Pi driver's PWM maximum. Side/rear blind spots remain; keep space around the can for pivots.")
+            Text("Preview works without the Pi. Brief missing measurements pause the motors; stable readings can resume within 2 s. Obstacles, connection failures and longer gaps require Start again. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Driving sends 100% commands for forward, detours and turns, scaled by the Pi driver's PWM maximum. Side/rear blind spots remain; keep space around the can for pivots.")
                 .font(.caption).foregroundStyle(.secondary)
         }.card()
     }

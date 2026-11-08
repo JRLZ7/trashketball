@@ -250,7 +250,8 @@ enum PlayerMapGeometry {
     }
 }
 
-struct ApproachDecision: Equatable {
+struct ApproachDecision: Codable, Equatable {
+    var recoverableSensorWait = false
     var action: String = "stop"
     var speed: Int = 0
     var message: String = "Waiting for live UWB and LiDAR"
@@ -377,19 +378,19 @@ struct LocalAvoidanceNavigator {
                            scan: AvoidanceScan, fallbackCorridor: CorridorEstimate,
                            yaw: Float?, position: SIMD2<Float>?, world: UUID, frameTime: TimeInterval,
                            now: TimeInterval, targetMeters: Int, previousAction: String?, driving: Bool) -> ApproachDecision {
-        func stop(_ text: String) -> ApproachDecision { ApproachDecision(message:text) }
+        func stop(_ text: String, sensorWait: Bool = false) -> ApproachDecision { ApproachDecision(recoverableSensorWait:sensorWait,message:text) }
         guard connected, let age = uwbAge, age.isFinite, age >= 0, age < 0.25,
               let distance, distance.isFinite, distance > 0, distance <= 30,
               let angle, angle.isFinite, abs(angle) <= .pi else {
             detour = nil
-            return stop("Stop · UWB distance or bearing unavailable/stale")
+            return stop("Stop · UWB distance or bearing unavailable/stale", sensorWait:true)
         }
         guard (1...3).contains(targetMeters) else { return stop("Stop · invalid stopping distance") }
         if distance <= Float(targetMeters)+0.15 { detour = nil; return stop("Arrived · at selected phone-to-phone distance") }
         guard depthAge.isFinite, depthAge >= 0, depthAge < 0.4, trackingNormal, floorReady,
               let yaw, yaw.isFinite, let position, position.x.isFinite, position.y.isFinite else {
             detour = nil
-            return stop("Stop · waiting for recent LiDAR and Normal tracking")
+            return stop("Stop · waiting for recent LiDAR and Normal tracking", sensorWait:true)
         }
         if let previousWorld = referenceWorld, previousWorld != world {
             reset(); referenceWorld = world
@@ -399,7 +400,7 @@ struct LocalAvoidanceNavigator {
         if let near = scan.nearestRadialObstacle, !near.isFinite || near < 0.35 {
             return stop("Stop · obstacle within 35 cm; too close to pivot")
         }
-        guard !scan.lanes.isEmpty else { return stop("Stop · waiting for left/right clearance scan") }
+        guard !scan.lanes.isEmpty else { return stop("Stop · waiting for left/right clearance scan", sensorWait:true) }
         let forward = SIMD2(sin(yaw),-cos(yaw)), right = SIMD2(cos(yaw),sin(yaw))
         let forwardOpen = scan.nearestLane(to:0)?.isOpen == true
         let goalLane = scan.nearestLane(to:angle)
@@ -427,7 +428,8 @@ struct LocalAvoidanceNavigator {
         }
         if goalOpen, let lane = goalLane {
             preferredSide = nil
-            return Self.steer(angle:lane.angle,lane:lane,avoiding:false,previousAction:previousAction,forwardOpen:forwardOpen)
+            // The lane certifies clearance; its 15° center is not the actual target bearing.
+            return Self.steer(angle:angle,lane:lane,avoiding:false,previousAction:previousAction,forwardOpen:forwardOpen)
         }
         let candidates = scan.lanes.filter { lane in
             lane.isOpen && abs(lane.angle-angle) < .pi/2 &&
