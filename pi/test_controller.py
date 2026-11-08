@@ -85,7 +85,7 @@ class MotionTests(unittest.TestCase):
         with self.assertRaises(MotionError): self.controller.control(self.cmd('summon'))
         with self.assertRaises(MotionError): Controller().control(self.cmd())
     def test_expired_packet_and_speed_cap(self):
-        command=self.cmd(); self.clock.advance(.31)
+        command=self.cmd(); self.clock.advance(1.01)
         with self.assertRaises(MotionError): self.controller.control(command)
         command=self.cmd(); command['speed']=101
         with self.assertRaises(MotionError): self.controller.control(command)
@@ -180,7 +180,7 @@ class MotionTests(unittest.TestCase):
         self.clock.advance(.301); controller.tick()
         self.assertEqual(self.drive.outputs[-1], (0,0))
         with self.assertRaises(MotionError): controller.control(renewal)
-        stale = self.cmd(id='delayed'); stale['sent_at'] += 86400-.4
+        stale = self.cmd(id='delayed'); stale['sent_at'] += 86400-1.1
         with self.assertRaisesRegex(MotionError, 'age .*ms'):
             controller.control(stale)
 
@@ -204,6 +204,48 @@ class MotionTests(unittest.TestCase):
         self.controller.control(self.cmd(id='updated'))
         self.assertEqual(self.drive.outputs, [])
         self.assertEqual(self.controller.status()['commandID'], 'updated')
+
+    def test_relaxed_clock_tolerance_accepts_reported_313_ms_age(self):
+        for age in (.313, .75, 1.0, -.313, -.75, -1.0):
+            with self.subTest(age=age):
+                command = self.cmd(id='clock-'+str(age))
+                command['sent_at'] -= age
+                self.controller.control(command)
+                self.assertEqual(self.drive.outputs[-1], (25,25))
+
+    def test_relaxed_clock_tolerance_still_rejects_very_old_or_future_packets(self):
+        for age in (1.01, -1.01, 5, -5):
+            with self.subTest(age=age):
+                command = self.cmd(id='expired-'+str(age)); command['sent_at'] -= age
+                with self.assertRaisesRegex(MotionError,'outside tolerance'):
+                    self.controller.control(command)
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+
+    def test_timestamp_tolerance_does_not_extend_connection_watchdog(self):
+        command = self.cmd(); command['sent_at'] -= .313
+        self.controller.control(command)
+        self.clock.advance(.301); self.controller.tick()
+        self.assertEqual(self.controller.state,'timed_out')
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+        late = self.cmd(); late['sent_at'] -= .313
+        with self.assertRaises(MotionError): self.controller.control(late)
+
+    def test_stop_retires_tolerated_old_command(self):
+        command = self.cmd(); command['sent_at'] -= .313
+        self.controller.control(command)
+        self.controller.control(self.cmd('stop',id='stop-old'))
+        late = self.cmd(); late['sent_at'] -= .313
+        with self.assertRaises(MotionError): self.controller.control(late)
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+
+    def test_stop_overtaking_initial_packet_blocks_delayed_start(self):
+        delayed = self.cmd(id='never-received-yet'); delayed['sent_at'] -= .313
+        self.controller.control(self.cmd('stop',id='priority-stop'))
+        with self.assertRaisesRegex(MotionError,'Out-of-order'):
+            self.controller.control(delayed)
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+        self.controller.control(self.cmd(id='new-explicit-start'))
+        self.assertEqual(self.drive.outputs[-1],(25,25))
 
 
 if __name__ == '__main__': unittest.main()

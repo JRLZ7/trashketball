@@ -1,7 +1,7 @@
 """Motor control state machine. No GPIO imports; Drive is injected at startup."""
 import math
 import time
-from collections import deque
+from collections import deque, OrderedDict
 
 
 class MotionError(ValueError):
@@ -11,6 +11,9 @@ class MotionError(ValueError):
 class Controller:
     WATCHDOG = 0.3
     MAX_SAMPLE_AGE = 0.25
+    # Clock estimation / packet timestamp tolerance, independent of connection loss.
+    MAX_COMMAND_AGE = 1.0
+    MAX_CLOCK_LEAD = 1.0
 
     def __init__(self, drive=None, *, clock=time.monotonic, wall=time.time,
                  calibrated=False, bearing_sign=1, bearing_offset=0,
@@ -32,6 +35,7 @@ class Controller:
         self.command = None
         self.renewed = 0
         self.closed_ids = deque(maxlen=512)
+        self.stop_sequences = OrderedDict()
         self.last_output = None
         self._output(0, 0)
 
@@ -118,10 +122,21 @@ class Controller:
         if type(stamp) not in (int, float) or not math.isfinite(stamp):
             raise MotionError('Missing command timestamp')
         # Stops are accepted even when a clock is skewed; movement is not.
-        if action != 'stop' and not -0.25 <= self.wall() - stamp <= 0.3:
-            raise MotionError(f'Command expired or phone/Pi clocks differ (age {(self.wall()-stamp)*1000:+.0f} ms; allowed -250..300 ms). Resynchronize the app with Pi')
+        age = self.wall()-stamp
+        if action != 'stop' and not -self.MAX_CLOCK_LEAD <= age <= self.MAX_COMMAND_AGE:
+            raise MotionError(f'Command timestamp outside tolerance (age {age*1000:+.0f} ms; '
+                              f'allowed {-self.MAX_CLOCK_LEAD*1000:.0f}..{self.MAX_COMMAND_AGE*1000:.0f} ms). '
+                              'Wait for Pi clock synchronization and press Start again')
         same_owner = self.owner == data['client_id']
         if action == 'stop':
+            # A Stop can overtake the first movement request on another socket.
+            # Remember its sequence even before this client owns a command.
+            client = data['client_id']
+            self.stop_sequences[client] = max(self.stop_sequences.get(client,-1), data['sequence'],
+                                              self.sequence if same_owner else -1)
+            self.stop_sequences.move_to_end(client)
+            if len(self.stop_sequences) > 128:
+                self.stop_sequences.popitem(last=False)
             if same_owner:
                 self.sequence = max(self.sequence, data['sequence'])
             self.closed_ids.append(data['id'])
@@ -129,7 +144,7 @@ class Controller:
             return self.status()
         if self.inspection:
             raise MotionError('LiDAR Lab is active on the can phone; close it before driving')
-        if same_owner and data['sequence'] <= self.sequence:
+        if data['sequence'] <= self.stop_sequences.get(data['client_id'], -1) or (same_owner and data['sequence'] <= self.sequence):
             raise MotionError('Out-of-order command')
         if not self.drive:
             raise MotionError('Motor control disabled in pi/server.py')
