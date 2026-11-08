@@ -27,7 +27,7 @@ INVERT_LEFT = False
 INVERT_RIGHT = False
 # Initial correction for observed right drift: slow the faster left wheel.
 # Keep gains <= 1 so trim can never exceed the driver's 150/255 PWM ceiling.
-LEFT_MOTOR_GAIN = 0.90
+LEFT_MOTOR_GAIN = 1.00
 RIGHT_MOTOR_GAIN = 1.00
 BEAM_ACTIVE_HIGH = False
 
