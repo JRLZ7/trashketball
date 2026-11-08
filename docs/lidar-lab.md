@@ -43,3 +43,26 @@ Synthetic geometry checks cover floor rejection, a known-distance box, footprint
 Apple references:
 - https://developer.apple.com/documentation/arkit/displaying-a-point-cloud-using-scene-depth
 - https://developer.apple.com/documentation/nearbyinteraction/nisession/setarsession(_:)
+
+
+## Top-down player + obstacle map
+
+The Lab now includes a local map computed entirely on the can phone, with no Pi mapping work or motor commands. It pans with the phone while keeping the AR session axes fixed (not geographic north). Choose a 4/8/12 m square view. Each background grid line is 1 m apart; the underlying observation cells are 15 cm squares.
+
+- White circle/arrow: assumed 30 cm can footprint and rear-camera heading. Yellow: the same 46 cm × 3 m forward corridor shown on the camera preview.
+- Orange cells: at least three medium/high-confidence obstacle samples in a cell, 8 cm–1.5 m above the assumed floor. Green cells: observed floor within ±6 cm of it. Dark areas are unknown; green is an observation, not a passage guarantee.
+- Cells stay in AR world coordinates as the phone moves. They fade and expire after 4 s, and cells beyond 6 m from the phone are discarded. Floor returns cannot immediately erase a remembered obstacle. Clear map removes observations without resetting the shared AR/UWB session; a session reset/interruption discards the floor, map and player reference.
+- Cyan dot: the player phone, using this can phone's UWB measurement and an AR camera pose captured at the NI callback (pose age <250 ms). Freshness is checked independently: targets disappear after 1 s without a usable update, when the peer disconnects, or when tracking/depth is unavailable. Distance alone never invents a bearing.
+- Full 3D NI direction is transformed through the AR camera rotation, so its vertical component is removed by ground projection. With only camera-assisted horizontal angle, the map uses the phone-to-phone slant distance as horizontal range and marks the target **approximate**; differing phone heights shift its position. This is a diagnostic approximation, not a verified position for navigation.
+- Cyan dashed line is only the measured bearing. The 1 m dashed ring marks a proposed stopping distance for future planning. There is no route planner or obstacle inflation yet, and nothing in this map drives the motors.
+
+### Two-phone walk test (no Pi required)
+
+1. Build/install the updated app on both phones. Connect them with the existing can/player roles and camera assistance enabled. Use the can phone's Lab for the map.
+2. Disconnect motor power for a standalone test, acknowledge this in Lab, and start LiDAR. Hold the can phone at the assumed 44 cm lens height, rear camera facing forward and slightly down. Let tracking become Normal and UWB direction converge.
+3. Put a box about 1–2 m in front. Orange cells should line up with it and the yellow corridor; move the box to the side and confirm the map location changes. Old box cells may persist for up to 4 s.
+4. Keep the player phone stationary, preferably at the same height as the can phone to reduce the bearing-only range approximation. Confirm cyan lies on the correct side of the box. Use a tape measure and test a player directly ahead and to either side.
+5. Carry the can phone sideways and turn gently, maintaining its height. The map pans and the white arrow rotates; the box and player should keep roughly the same positions relative to each other. Check this physically before planning routes.
+6. Disconnect/stop the player session: cyan should disappear within 1 s. Stop the camera or cover it until tracking is limited: the map should become unavailable, rather than continuing to show live geometry. Clear map and resume scanning to confirm fresh observations return.
+
+Apple's [Nearby Interaction camera-assistance overview](https://developer.apple.com/videos/play/wwdc2022/10008/) describes the shared ARSession requirements and recommends stationary peer devices for this mode. Validate with a stationary player first; moving-player behavior needs a separate physical test.

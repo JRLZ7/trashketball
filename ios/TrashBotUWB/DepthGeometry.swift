@@ -75,3 +75,77 @@ struct FloorReference {
     }
     mutating func reset() { y = nil }
 }
+
+struct MapCellKey: Hashable {
+    var x: Int
+    var z: Int
+}
+struct MapCell {
+    var key: MapCellKey
+    var obstacle: Bool
+    var timestamp: TimeInterval
+    var center: SIMD2<Float> {
+        SIMD2((Float(key.x)+0.5)*LocalDepthMap.cellSize, (Float(key.z)+0.5)*LocalDepthMap.cellSize)
+    }
+}
+
+// A short-lived observation map, not a navigable/free-space guarantee.
+struct LocalDepthMap {
+    static let cellSize: Float = 0.15
+    static let lifetime: TimeInterval = 4
+    private(set) var cells: [MapCellKey: MapCell] = [:]
+    mutating func reset() { cells.removeAll() }
+    mutating func update(samples: [DepthSample], floorY: Float, origin: SIMD2<Float>, now: TimeInterval) {
+        cells = cells.filter { now-$0.value.timestamp <= Self.lifetime && simd_distance($0.value.center, origin) <= 6 }
+        var floorKeys = Set<MapCellKey>()
+        var hits: [MapCellKey: Int] = [:]
+        for sample in samples where sample.confidence >= 1 {
+            let p = sample.world
+            guard p.x.isFinite, p.y.isFinite, p.z.isFinite, simd_distance(SIMD2(p.x,p.z), origin) <= 5 else { continue }
+            let key = MapCellKey(x: Int((p.x/Self.cellSize).rounded(.down)), z: Int((p.z/Self.cellSize).rounded(.down)))
+            let height = p.y-floorY
+            if abs(height) <= 0.06 { floorKeys.insert(key) }
+            if height >= 0.08 && height <= 1.5 { hits[key, default: 0] += 1 }
+        }
+        // Seeing floor does not prove that an older obstacle has disappeared: retain it until expiry.
+        for key in floorKeys where cells[key]?.obstacle != true {
+            cells[key] = MapCell(key: key, obstacle: false, timestamp: now)
+        }
+        for (key, count) in hits where count >= 3 {
+            cells[key] = MapCell(key: key, obstacle: true, timestamp: now)
+        }
+    }
+}
+
+struct MapPlayerTarget {
+    var position: SIMD2<Float>
+    var timestamp: TimeInterval
+    var approximate: Bool
+    func isFresh(at time: TimeInterval) -> Bool { time-timestamp >= 0 && time-timestamp < 1 }
+}
+
+enum PlayerMapGeometry {
+    // ARKit camera coordinates: +X right, +Y up, -Z out of the rear camera.
+    // A bearing-only reading uses slant range as horizontal range and is explicitly approximate.
+    static func target(distance: Float?, horizontalAngle: Float?, direction: SIMD3<Float>?,
+                       camera: simd_float4x4, timestamp: TimeInterval) -> MapPlayerTarget? {
+        guard let distance, distance.isFinite, distance > 0, distance <= 30 else { return nil }
+        let origin = SIMD3(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z)
+        guard origin.x.isFinite, origin.y.isFinite, origin.z.isFinite else { return nil }
+        if let direction, direction.x.isFinite, direction.y.isFinite, direction.z.isFinite,
+           simd_length(direction) > 0.1 {
+            let d = simd_normalize(direction)*distance
+            let world = camera*SIMD4(d.x,d.y,d.z,0)
+            let p = origin+SIMD3(world.x,world.y,world.z)
+            guard p.x.isFinite, p.z.isFinite else { return nil }
+            return MapPlayerTarget(position: SIMD2(p.x,p.z), timestamp: timestamp, approximate: false)
+        }
+        guard let angle = horizontalAngle, angle.isFinite, abs(angle) <= .pi else { return nil }
+        var forward = SIMD2(-camera.columns.2.x, -camera.columns.2.z)
+        guard simd_length(forward) > 0.1 else { return nil }
+        forward = simd_normalize(forward)
+        let right = SIMD2(-forward.y, forward.x)
+        let p = SIMD2(origin.x,origin.z) + distance*(cos(angle)*forward + sin(angle)*right)
+        return MapPlayerTarget(position: p, timestamp: timestamp, approximate: true)
+    }
+}

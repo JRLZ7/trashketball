@@ -18,6 +18,10 @@ struct LidarSnapshot {
     var polygon: [CGPoint] = []
     var yawDegrees: Float?
     var calibrated = false
+    var mapCells: [MapCell] = []
+    var robotPosition: SIMD2<Float>?
+    var robotForward: SIMD2<Float>?
+    var playerTarget: MapPlayerTarget?
 }
 
 final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
@@ -35,6 +39,9 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
     private var viewport = CGSize(width: 350, height: 420)
     private var lastTimestamp: TimeInterval = -1
     private var floor = FloorReference()
+    private var localMap = LocalDepthMap()
+    private var playerTarget: MapPlayerTarget?
+    private var minimumFrameTimestamp: TimeInterval = 0
     private let corridorWidth = AssumedRobotDimensions.width + 2*AssumedRobotDimensions.sideClearance
 
     override init() {
@@ -55,7 +62,10 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         previewRequested = true
         previewRunning = true
         error = nil
-        queue.async { self.sampling = true; self.lastTimestamp = -1 }
+        queue.async {
+            self.sampling = true; self.lastTimestamp = -1; self.localMap.reset()
+            DispatchQueue.main.async { self.snapshot = LidarSnapshot() }
+        }
         runIfNeeded()
     }
     func stopPreview() {
@@ -63,6 +73,33 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         previewRunning = false
         queue.async { self.sampling = false }
         pauseIfUnused()
+    }
+    // Called by the NI delegate on the main queue; capture pose at the UWB update, not later at draw time.
+    func updatePlayer(distance: Float?, horizontalAngle: Float?, direction: SIMD3<Float>?) {
+        guard let frame = session.currentFrame, case .normal = frame.camera.trackingState,
+              ProcessInfo.processInfo.systemUptime-frame.timestamp >= 0,
+              ProcessInfo.processInfo.systemUptime-frame.timestamp < 0.25 else {
+            clearPlayer(); return
+        }
+        let target = PlayerMapGeometry.target(distance: distance, horizontalAngle: horizontalAngle,
+                                             direction: direction, camera: frame.camera.transform,
+                                             timestamp: Date().timeIntervalSince1970)
+        let frameTimestamp = frame.timestamp
+        queue.async {
+            guard frameTimestamp >= self.minimumFrameTimestamp else { return }
+            self.playerTarget = target
+        }
+    }
+    func clearPlayer() { queue.async { self.playerTarget = nil } }
+    func clearMap() {
+        queue.async {
+            self.localMap.reset()
+            DispatchQueue.main.async { self.snapshot.mapCells = [] }
+        }
+    }
+    private func resetGeometry() {
+        floor.reset(); localMap.reset(); playerTarget = nil
+        minimumFrameTimestamp = ProcessInfo.processInfo.systemUptime
     }
     func updateViewport(_ size: CGSize) {
         guard size.width > 0, size.height > 0 else { return }
@@ -81,7 +118,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         guard ARWorldTrackingConfiguration.isSupported else { error = "AR world tracking is unavailable on this device."; return }
         guard !sessionRunning else { return }
         sessionRunning = true
-        queue.async { self.floor.reset() }
+        queue.async { self.resetGeometry() }
         session.run(configuration(), options: [.resetTracking, .removeExistingAnchors])
     }
     private func pauseIfUnused() {
@@ -89,13 +126,13 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         session.pause()
         sessionRunning = false
         queue.async {
-            self.floor.reset()
+            self.resetGeometry()
             DispatchQueue.main.async { self.snapshot = LidarSnapshot() }
         }
     }
     func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool { false }
     func session(_ session: ARSession, didFailWithError error: Error) {
-        floor.reset()
+        resetGeometry()
         DispatchQueue.main.async {
             self.error = error.localizedDescription
             self.sessionRunning = false; self.previewRunning = false
@@ -103,18 +140,18 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
     func sessionWasInterrupted(_ session: ARSession) {
-        floor.reset()
+        resetGeometry()
         DispatchQueue.main.async { self.snapshot = LidarSnapshot(message: "Unknown · camera interrupted; floor will reinitialize") }
     }
     func sessionInterruptionEnded(_ session: ARSession) {
-        floor.reset()
+        resetGeometry()
         DispatchQueue.main.async {
             self.sessionRunning = false
             if self.uwbRequested || self.previewRequested { self.runIfNeeded() }
         }
     }
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard sampling, frame.timestamp-lastTimestamp >= 0.2 else { return }
+        guard sampling, frame.timestamp >= minimumFrameTimestamp, frame.timestamp-lastTimestamp >= 0.2 else { return }
         lastTimestamp = frame.timestamp
         var result = LidarSnapshot(timestamp: .now)
         switch frame.camera.trackingState {
@@ -128,6 +165,14 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         if case .normal = frame.camera.trackingState { trackingNormal = true } else { trackingNormal = false }
         let floorY = floor.update(cameraY: origin.y, trackingNormal: trackingNormal)
         let forward = SIMD3<Float>(-transform.columns.2.x, 0, -transform.columns.2.z)
+        if trackingNormal {
+            result.robotPosition = SIMD2(origin.x,origin.z)
+            let flatForward = SIMD2(forward.x,forward.z)
+            if simd_length(flatForward) > 0.1 { result.robotForward = simd_normalize(flatForward) }
+            if let target = playerTarget, target.isFresh(at: result.timestamp.timeIntervalSince1970) {
+                result.playerTarget = target
+            }
+        }
         if simd_length(forward) > 0.1 { result.yawDegrees = atan2(forward.x, -forward.z)*180 / .pi }
         if let depth = frame.sceneDepth, let confidence = depth.confidenceMap {
             let map = depth.depthMap
@@ -165,6 +210,8 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
             result.depthCoverage = attempted > 0 ? Float(samples.count)/Float(attempted) : 0
             if let floorY, case .normal = frame.camera.trackingState {
                 result.calibrated = true
+                localMap.update(samples: samples, floorY: floorY, origin: SIMD2(origin.x,origin.z), now: result.timestamp.timeIntervalSince1970)
+                result.mapCells = Array(localMap.cells.values)
                 result.corridor = DepthGeometry.estimate(samples: samples, origin: origin, forward: forward, floorY: floorY, width: corridorWidth)
                 if simd_length(forward) > 0.1 {
                     let heading = simd_normalize(forward), right = simd_cross(heading, SIMD3<Float>(0,1,0))

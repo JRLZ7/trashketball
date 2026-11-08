@@ -44,3 +44,42 @@ assert(reference.update(cameraY: 0.2, trackingNormal: false) == nil)
 assert(abs(reference.update(cameraY: 0.2, trackingNormal: true)! + 0.24) < 0.001, "Auto-initialize after reset")
 assert(abs(AssumedRobotDimensions.width + 2*AssumedRobotDimensions.sideClearance - 0.46) < 0.001)
 print("Automatic floor reference: normal tracking, persistence, reset and dimensions passed")
+
+func near(_ a: SIMD2<Float>, _ b: SIMD2<Float>) -> Bool { simd_distance(a,b) < 0.001 }
+let camera = matrix_identity_float4x4
+let frontTarget = PlayerMapGeometry.target(distance: 2, horizontalAngle: 0, direction: nil, camera: camera, timestamp: 10)!
+assert(near(frontTarget.position,SIMD2(0,-2)) && frontTarget.approximate)
+let rightTarget = PlayerMapGeometry.target(distance: 2, horizontalAngle: .pi/2, direction: nil, camera: camera, timestamp: 10)!
+assert(near(rightTarget.position,SIMD2(2,0)), "Positive bearing must be camera-right")
+var movedCamera = matrix_identity_float4x4
+movedCamera.columns.3 = SIMD4(1,0.44,2,1)
+// Rear camera faces world +X after a right turn.
+movedCamera.columns.0 = SIMD4(0,0,1,0)
+movedCamera.columns.2 = SIMD4(-1,0,0,0)
+let movedTarget = PlayerMapGeometry.target(distance: 2, horizontalAngle: 0, direction: nil, camera: movedCamera, timestamp: 11)!
+assert(near(movedTarget.position,SIMD2(3,2)), "Apply translation and world heading")
+let fullDirection = PlayerMapGeometry.target(distance: 2, horizontalAngle: 1, direction: SIMD3(0,0.6,-0.8), camera: movedCamera, timestamp: 11)!
+assert(near(fullDirection.position,SIMD2(2.6,2)) && !fullDirection.approximate, "3D direction handles vertical separation")
+assert(PlayerMapGeometry.target(distance: 2, horizontalAngle: nil, direction: nil, camera: camera, timestamp: 0) == nil)
+assert(PlayerMapGeometry.target(distance: .nan, horizontalAngle: 0, direction: nil, camera: camera, timestamp: 0) == nil)
+assert(PlayerMapGeometry.target(distance: 2, horizontalAngle: .infinity, direction: nil, camera: camera, timestamp: 0) == nil)
+var map = LocalDepthMap()
+map.update(samples: floor+box+lowConfidence, floorY: 0, origin: .zero, now: 10)
+assert(map.cells.values.contains { $0.obstacle })
+assert(map.cells.values.contains { !$0.obstacle })
+let occupied = map.cells.values.first { $0.obstacle }!
+map.update(samples: [DepthSample(world: SIMD3(occupied.center.x,0,occupied.center.y), confidence: 2)], floorY: 0, origin: .zero, now: 11)
+assert(map.cells[occupied.key]?.obstacle == true, "A floor return cannot erase an obstacle")
+map.update(samples: [], floorY: 0, origin: .zero, now: 16)
+assert(map.cells.isEmpty, "Old observations must expire into unknown")
+map.update(samples: box, floorY: 0, origin: .zero, now: 17)
+map.update(samples: [], floorY: 0, origin: SIMD2(20,20), now: 18)
+assert(map.cells.isEmpty, "Map memory bounded to nearby cells")
+map.update(samples: noise, floorY: 0, origin: .zero, now: 19)
+assert(map.cells.isEmpty, "Isolated obstacle noise ignored")
+map.update(samples: box, floorY: 0, origin: .zero, now: 20)
+map.reset(); assert(map.cells.isEmpty)
+print("Local map: UWB frame conversion, height projection, invalid readings, occupancy, expiry and resets passed")
+
+assert(frontTarget.isFresh(at: 10.5))
+assert(!frontTarget.isFresh(at: 11.1) && !frontTarget.isFresh(at: 9), "Stale and future targets hidden")

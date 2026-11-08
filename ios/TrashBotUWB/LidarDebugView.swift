@@ -1,5 +1,6 @@
 import SwiftUI
 import ARKit
+import simd
 
 struct LidarDebugView: View {
     @ObservedObject var model: RangingModel
@@ -19,7 +20,7 @@ struct LidarDebugView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Text("LiDAR Lab").font(.largeTitle.weight(.black))
-                Text("Perception only · no trajectory or driving").foregroundStyle(.orange).font(.subheadline.bold())
+                Text("Player + obstacle map · no driving").foregroundStyle(.orange).font(.subheadline.bold())
                 VStack(alignment: .leading, spacing: 10) {
                     Label(model.inspectionMessage, systemImage: model.inspectionConfirmed ? "lock.shield.fill" : "exclamationmark.triangle.fill")
                         .foregroundStyle(model.inspectionConfirmed ? .green : .orange)
@@ -28,6 +29,7 @@ struct LidarDebugView: View {
                         Text("Without a Pi-confirmed hold, disconnect the motor battery before starting this test.").font(.caption).foregroundStyle(.secondary)
                     }
                 }.labCard()
+                LocalMapView(lidar: lidar, model: model)
                 GeometryReader { proxy in
                     ZStack {
                         if lidar.previewRunning {
@@ -126,4 +128,98 @@ private struct LidarCameraView: UIViewRepresentable {
 }
 private extension View {
     func labCard() -> some View { padding(18).frame(maxWidth: .infinity, alignment: .leading).background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 20)) }
+}
+
+private struct LocalMapView: View {
+    @ObservedObject var lidar: LidarModel
+    @ObservedObject var model: RangingModel
+    @State private var span: Float = 8
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.2)) { tick in
+            let s = lidar.snapshot
+            let live = lidar.previewRunning && tick.date.timeIntervalSince(s.timestamp) < 0.75 && s.calibrated
+            let target = live && model.connected && model.isFresh(at: tick.date)
+                ? s.playerTarget.flatMap {  $0.isFresh(at: tick.date.timeIntervalSince1970) ? $0 : nil } : nil
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Local map").font(.headline)
+                    Spacer()
+                    Button("Clear map") { lidar.clearMap() }.font(.caption)
+                }
+                Picker("Map width", selection: $span) {
+                    Text("4 m").tag(Float(4)); Text("8 m").tag(Float(8)); Text("12 m").tag(Float(12))
+                }.pickerStyle(.segmented)
+                Canvas { context, size in
+                    let scale = min(size.width,size.height)/CGFloat(span)
+                    let center = CGPoint(x: size.width/2,y: size.height/2)
+                    let robot = s.robotPosition ?? .zero
+                    func project(_ p: SIMD2<Float>) -> CGPoint {
+                        CGPoint(x: center.x+CGFloat(p.x-robot.x)*scale, y: center.y+CGFloat(p.y-robot.y)*scale)
+                    }
+                    // AR-world axes stay fixed. The map pans with the robot, but never rotates with it.
+                    for offset in -Int(span)...Int(span) {
+                        let x = CGFloat(offset)-CGFloat(robot.x.truncatingRemainder(dividingBy: 1))
+                        let z = CGFloat(offset)-CGFloat(robot.y.truncatingRemainder(dividingBy: 1))
+                        var grid = Path()
+                        grid.move(to: CGPoint(x:center.x+x*scale,y:0)); grid.addLine(to: CGPoint(x:center.x+x*scale,y:size.height))
+                        grid.move(to: CGPoint(x:0,y:center.y+z*scale)); grid.addLine(to: CGPoint(x:size.width,y:center.y+z*scale))
+                        context.stroke(grid,with:.color(.white.opacity(0.08)),lineWidth:1)
+                    }
+                    guard live, s.robotPosition != nil else { return }
+                    for cell in s.mapCells {
+                        let age = tick.date.timeIntervalSince1970-cell.timestamp
+                        guard age >= 0, age <= LocalDepthMap.lifetime else { continue }
+                        let p = project(cell.center), width = CGFloat(LocalDepthMap.cellSize)*scale
+                        let opacity = max(0.2,1-age/LocalDepthMap.lifetime)
+                        let rect = CGRect(x:p.x-width/2,y:p.y-width/2,width:width,height:width)
+                        context.fill(Path(rect),with:.color((cell.obstacle ? Color.orange : Color.green.opacity(0.45)).opacity(opacity)))
+                    }
+                    if let heading = s.robotForward {
+                        let right = SIMD2(-heading.y,heading.x)
+                        var lane = Path()
+                        lane.addLines([robot+heading*0.15-right*0.23,robot+heading*3-right*0.23,
+                                       robot+heading*3+right*0.23,robot+heading*0.15+right*0.23].map(project))
+                        lane.closeSubpath()
+                        context.stroke(lane,with:.color(.yellow.opacity(0.8)),lineWidth:1.5)
+                        var arrow = Path()
+                        arrow.move(to:project(robot+heading*0.45))
+                        arrow.addLine(to:project(robot-heading*0.15+right*0.15))
+                        arrow.addLine(to:project(robot-heading*0.15-right*0.15)); arrow.closeSubpath()
+                        context.fill(arrow,with:.color(.white))
+                    }
+                    let bucketWidth = CGFloat(AssumedRobotDimensions.width)*scale
+                    context.stroke(Path(ellipseIn:CGRect(x:center.x-bucketWidth/2,y:center.y-bucketWidth/2,width:bucketWidth,height:bucketWidth)),with:.color(.white),lineWidth:2)
+                    if let target {
+                        let p = project(target.position)
+                        var line = Path(); line.move(to:center); line.addLine(to:p)
+                        context.stroke(line,with:.color(.cyan.opacity(0.55)),style:StrokeStyle(lineWidth:1,dash:[4,4]))
+                        let ring = CGRect(x:p.x-scale,y:p.y-scale,width:2*scale,height:2*scale)
+                        context.stroke(Path(ellipseIn:ring),with:.color(.cyan.opacity(0.5)),style:StrokeStyle(lineWidth:1,dash:[5,4]))
+                        context.fill(Path(ellipseIn:CGRect(x:p.x-6,y:p.y-6,width:12,height:12)),with:.color(.cyan))
+                    }
+                    context.draw(Text("1 m grid").font(.caption2).foregroundColor(.gray),at:CGPoint(x:40,y:size.height-12))
+                }
+                .frame(height: 300).clipped()
+                .background(Color.black.opacity(0.6),in:RoundedRectangle(cornerRadius:12))
+                .accessibilityLabel("Top-down player and obstacle map")
+                Text(status(live: live, target: target, snapshot: s)).font(.subheadline.bold()).foregroundStyle(target == nil ? .orange : .cyan)
+                Text("White: can + heading · orange: obstacles · green: observed floor · dark: unknown. Cyan: player; dashed ring: proposed 1 m stopping distance. Dashed line is a bearing, not a planned route.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Map stays aligned to this AR session, not north. Observations fade after 4 s. Keep the player still for the first test; carry the can phone to check alignment.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let target, target.approximate {
+                    Text("Approximate target: using UWB slant distance as ground distance. Different phone heights can shift the marker.").font(.caption).foregroundStyle(.orange)
+                }
+            }.labCard()
+        }
+    }
+    private func status(live: Bool, target: MapPlayerTarget?, snapshot: LidarSnapshot) -> String {
+        guard live else { return "Map waiting for live depth and Normal tracking" }
+        guard model.connected else { return "Obstacles live · connect the player phone for a target" }
+        guard let target, let robot = snapshot.robotPosition else { return "Obstacles live · waiting for fresh UWB distance + direction" }
+        let distance = simd_distance(target.position,robot)
+        let offscreen = abs(target.position.x-robot.x)>span/2 || abs(target.position.y-robot.y)>span/2
+        return String(format:"Player %@%.2f m on map%@",target.approximate ? "≈ " : "",distance,offscreen ? " · outside view; zoom out" : "")
+    }
 }

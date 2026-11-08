@@ -313,7 +313,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
-    private func clear() { distance = nil; direction = nil; horizontalAngle = nil; updated = nil }
+    private func clear() { distance = nil; direction = nil; horizontalAngle = nil; updated = nil; lidar.clearPlayer() }
     private func sendToken() {
         guard let session = mpc, !session.connectedPeers.isEmpty, let token = ni?.discoveryToken else { return }
         do {
@@ -387,6 +387,9 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
         guard session === ni, let object = nearbyObjects.first(where: { $0.discoveryToken == peerToken }) else { return }
         distance = object.distance; direction = object.direction; horizontalAngle = object.horizontalAngle
+        if isRobot && sharedARAttached {
+            lidar.updatePlayer(distance: object.distance, horizontalAngle: object.horizontalAngle, direction: object.direction)
+        } else { lidar.clearPlayer() }
         updated = (distance != nil || direction != nil || horizontalAngle != nil) ? Date() : nil
         status = "Ranging"
     }
