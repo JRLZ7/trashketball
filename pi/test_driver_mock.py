@@ -35,3 +35,25 @@ class DriverIntegrationTests(unittest.TestCase):
         finally:
             Device.pin_factory.close()
             Device.pin_factory = old_factory
+
+    def test_beam_on_gpio24_mock(self):
+        from gpiozero import DigitalInputDevice
+        from scoring import BeamScorer
+        old_factory = Device.pin_factory
+        Device.pin_factory = MockFactory(pin_class=MockPWMPin)
+        clock = [1000.0]
+        beam = BeamScorer(clock=lambda: clock[0])
+        try:
+            beam.attach(input_factory=DigitalInputDevice)
+            self.assertFalse(beam.snapshot()['blocked'])
+            clock[0] += .1
+            Device.pin_factory.pin(24).drive_low()
+            self.assertTrue(beam.snapshot()['blocked'])
+            self.assertEqual(beam.snapshot()['breakCount'], 1)
+            clock[0] += .4
+            Device.pin_factory.pin(24).drive_high()
+            self.assertFalse(beam.snapshot()['blocked'])
+        finally:
+            beam.close()
+            Device.pin_factory.close()
+            Device.pin_factory = old_factory

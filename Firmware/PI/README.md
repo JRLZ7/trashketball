@@ -34,9 +34,9 @@ GPIOZERO_PIN_FACTORY=mock GPIOZERO_MOCK_PIN_CLASS=mockpwmpin python test_drive.p
 
 The Pi drives the same L298N as the ESP32 build. The motor supply is 12 V. The TT motors are rated 6 V. Pi GPIO is 3.3 V logic into the L298N inputs. Each enable pin is software PWM at 1000 Hz.
 
-GPIO pinout on the can. Every number below is a BCM GPIO, not a physical header pin. Motor 1 is the left channel and motor 2 is the right channel. The motor GPIOs are the defaults on `DrivePins` in `trashketball/drive.py`. The ESP32 sketch uses different GPIO numbers. The beam brake and the ultrasonic trigger/echo are wired, and the drive library does not read them.
+GPIO pinout on the can. Every number below is a BCM GPIO, not a physical header pin. Motor 1 is the left channel and motor 2 is the right channel. The motor GPIOs are the defaults on `DrivePins` in `trashketball/drive.py`. The ESP32 sketch uses different GPIO numbers. The beam break and the ultrasonic trigger/echo are wired. The drive library does not read them; the root `pi/server.py` bridge now reads the beam sensor for scoring.
 
-- GPIO 24: beam brake sensor
+- GPIO 24: beam break sensor
 - GPIO 17: motor 1 forward
 - GPIO 27: motor 1 backward
 - GPIO 18: motor 1 enable
@@ -83,3 +83,9 @@ with Drive(pins) as drive:
 That example builds a `Drive` on the harness pins above (motor 1 on the left channel, motor 2 on the right), drives both sides forward at 70%, coasts, then spins by driving the sides in opposite directions. `Drive()` uses those same motor pins.
 
 `run_sequence` in `test_drive.py` is the full timed demo. It drives forward for 2 seconds, coasts for 0.1 seconds, spins in place for 1 second, coasts for 1 second, spins the other way for 1 second, coasts for 0.1 seconds, reverses for 2 seconds, then coasts for 1 second. Those coasts match the ESP32 `loop()`.
+
+## App scoring and speed
+
+The root app bridge (`python3 pi/server.py --drive` from the repository root) reads BCM GPIO 24 with pull-up, defaults to LOW = broken, and debounces basket events during timed rounds. Use `--beam-active-high` if your module's output is inverted, `--beam` for scoring-only operation, or `--no-beam` for motor-only testing. Check Play's clear/blocked indicator before a round.
+
+The app now defaults to 80% command speed, allows 100% manual command, and caps autonomous forward command at 80%. These percentages are still scaled by this driver's `130/255` PWM cap. No motor pin assignments or MAX_DUTY values were changed.

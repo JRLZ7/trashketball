@@ -11,8 +11,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from controller import Controller, MotionError
+from scoring import BeamScorer
 
 controller = Controller()
+scorer = BeamScorer()
 control_lock = threading.RLock()
 latest = {}
 lock = threading.Lock()
@@ -78,6 +80,8 @@ def validate(data):
 
 class Handler(BaseHTTPRequestHandler):
     def reply(self, status, body):
+        if isinstance(body, dict) and 'drive' in body:
+            body = {**body, 'beam': scorer.snapshot()}
         raw = json.dumps(body, allow_nan=False).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
@@ -151,6 +155,7 @@ class Handler(BaseHTTPRequestHandler):
         if response_error:
             return self.reply(response_code, {'error': response_error, 'drive': drive_status})
         if self.path == '/measurements':
+            scorer.update_round(data)
             with lock:
                 latest[data['role']] = (data, time.monotonic())
         self.reply(200, {'ok': True, 'drive': drive_status})
@@ -164,7 +169,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global controller
+    global controller, scorer
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--drive', action='store_true', help='Enable real Pi GPIO motors')
     parser.add_argument('--bearing-calibrated', action='store_true', help='Allow summon after verifying mount and bearing sign')
@@ -172,6 +177,9 @@ def main():
     parser.add_argument('--bearing-offset-deg', type=float, default=0)
     parser.add_argument('--invert-left', action='store_true')
     parser.add_argument('--invert-right', action='store_true')
+    parser.add_argument('--beam', action='store_true', help='Enable GPIO 24 scoring without motor output')
+    parser.add_argument('--no-beam', action='store_true', help='Skip the beam sensor even with --drive')
+    parser.add_argument('--beam-active-high', action='store_true', help='Count HIGH as blocked instead of the default LOW')
     args = parser.parse_args()
     if len(TOKEN) < 16:
         raise SystemExit('Set TRASHBOT_TOKEN to a random secret of at least 16 characters.')
@@ -189,6 +197,13 @@ def main():
                                 bearing_sign=args.bearing_sign,
                                 bearing_offset=math.radians(args.bearing_offset_deg),
                                 invert_left=args.invert_left, invert_right=args.invert_right)
+        scorer = BeamScorer(pin=24)
+        if (args.drive or args.beam) and not args.no_beam:
+            try:
+                scorer.attach(active_high=args.beam_active_high)
+            except Exception as error:
+                scorer.message = 'Beam sensor unavailable: ' + str(error)
+                print(scorer.message, flush=True)
         server = ThreadingHTTPServer(('0.0.0.0', 5001), Handler)
         server.daemon_threads = True
         def watchdog():
@@ -206,6 +221,10 @@ def main():
         pass
     finally:
         stopped.set()
+        try:
+            scorer.close()
+        except Exception as error:
+            print("Beam close failed:", type(error).__name__, flush=True)
         with control_lock:
             try:
                 controller.stop('Server shutdown')

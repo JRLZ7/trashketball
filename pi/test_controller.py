@@ -87,7 +87,7 @@ class MotionTests(unittest.TestCase):
     def test_expired_packet_and_speed_cap(self):
         command=self.cmd(); self.clock.advance(.31)
         with self.assertRaises(MotionError): self.controller.control(command)
-        command=self.cmd(); command['speed']=100
+        command=self.cmd(); command['speed']=101
         with self.assertRaises(MotionError): self.controller.control(command)
     def test_polarity_and_bearing_sign(self):
         self.controller.invert_left=True
@@ -99,6 +99,11 @@ class MotionTests(unittest.TestCase):
         self.controller.control({**command, 'action': 'stop', 'id': 'late-stop', 'sequence': 0, 'sent_at': 0})
         self.assertEqual(self.drive.outputs[-1], (0,0))
         with self.assertRaises(MotionError): self.controller.control(self.cmd())
+
+    def test_full_command_range(self):
+        command = self.cmd(); command['speed'] = 100
+        self.controller.control(command)
+        self.assertEqual(self.drive.outputs[-1], (100,100))
 
     def test_fault_attempts_stop(self):
         def fail(*args): raise OSError('GPIO fault')

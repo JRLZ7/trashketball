@@ -11,7 +11,7 @@ struct ContentView: View {
     @StateObject private var game = GameStore()
     @AppStorage("role") private var role = "User"
     @AppStorage("receiver") private var receiver = ""
-    @AppStorage("driveSpeed") private var driveSpeed = 50
+    @AppStorage("driveSpeedV2") private var driveSpeed = 80
     @State private var token = ""
     @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
@@ -28,6 +28,7 @@ struct ContentView: View {
         }
         .tint(orange)
         .onReceive(clock) { _ in if !isRobot { game.tick() } }
+        .onChange(of: model.beamStatus) { _, beam in if !isRobot, let beam { game.applyBeam(beam) } }
         .onChange(of: game.round) { _, value in if !isRobot { model.publishRound(value) } }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { model.stopMotion() }
@@ -61,34 +62,32 @@ struct ContentView: View {
                         Text("POINTS").font(.caption.weight(.heavy)).tracking(4).foregroundStyle(.secondary)
                         HStack(spacing: 0) {
                             stat("BASKETS", "\(round.baskets)")
-                            stat("ATTEMPTS", "\(round.shots.count)")
+                            stat("SCORING", "IR beam")
                             stat("DISTANCE", "\(round.targetMeters)m")
                         }
                         if !isRobot {
                             if active {
-                                HStack {
-                                    Button { game.record(made: true) } label: {
-                                        Label("Made it +\(round.targetMeters)", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity)
-                                    }.buttonStyle(ActionStyle())
-                                    Button { game.record(made: false) } label: { Text("Miss").frame(minHeight: 30) }
-                                        .buttonStyle(.bordered).tint(.gray)
-                                }
-                                HStack {
-                                    Button("Undo last shot", systemImage: "arrow.uturn.backward") { game.undo() }
-                                        .disabled(round.shots.isEmpty)
-                                    Spacer()
-                                    Button("End round") { game.end() }.foregroundStyle(.secondary)
-                                }.font(.subheadline)
+                                Label("Baskets are counted by the beam sensor", systemImage: "sensor.fill")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                                Button("End round") { game.end() }.font(.subheadline)
                             } else {
                                 Button { round.finished ? game.reset() : game.start() } label: {
                                     Label(round.finished ? "Play again" : "Start round", systemImage: "play.fill").frame(maxWidth: .infinity)
-                                }.buttonStyle(ActionStyle())
+                                }.buttonStyle(ActionStyle()).disabled(!round.finished && (!model.beamIsLive(at: context.date) || model.beamStatus?.available != true))
                             }
                         } else {
                             Text(model.connected ? "Player controls the round. Keep this phone mounted and open." : "Connect the player’s phone to show the live round here.")
                                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }
                     }.padding(22).background(panel, in: RoundedRectangle(cornerRadius: 28))
+                }
+                TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                    let live = model.beamIsLive(at: context.date)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Beam-break scoring · GPIO 24", systemImage: "sensor.fill").font(.headline)
+                        Text(!live ? "Scoring offline · connect to the Pi" : model.beamStatus?.available != true ? model.beamStatus?.message ?? "Sensor unavailable" : model.beamStatus?.blocked == true ? "Beam blocked · clear the opening" : "Beam clear · ready for a basket")
+                            .font(.subheadline).foregroundStyle(live && model.beamStatus?.available == true ? .green : .orange)
+                    }.card()
                 }
                 if !isRobot && round.startedAt == nil {
                     VStack(alignment: .leading, spacing: 14) {
@@ -99,7 +98,7 @@ struct ContentView: View {
                         Picker("Round length", selection: Binding(get: { game.round.durationSeconds }, set: { game.configure(duration: $0) })) {
                             ForEach([30, 60, 90], id: \.self) { Text("\($0)s").tag($0) }
                         }.pickerStyle(.segmented)
-                        Text("Points follow your selected throwing distance. Tap Made it or Miss after each throw.")
+                        Text("Each beam interruption scores the selected distance’s points. Sensor scoring must be connected to start.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }.card()
                 }
@@ -164,7 +163,7 @@ struct ContentView: View {
                             Text("Hold an arrow to drive. Release to stop.").font(.footnote).foregroundStyle(.secondary)
                             HStack {
                                 Text("Speed").font(.subheadline)
-                                Slider(value: Binding(get: { Double(driveSpeed) }, set: { driveSpeed = Int($0) }), in: 20...70, step: 5)
+                                Slider(value: Binding(get: { Double(driveSpeed) }, set: { driveSpeed = Int($0) }), in: 20...100, step: 5)
                                     .disabled(model.activeAction != nil)
                                 Text("\(driveSpeed)%").font(.subheadline.monospacedDigit()).frame(width: 40)
                             }
@@ -180,7 +179,7 @@ struct ContentView: View {
                                 holdButton("Reverse", symbol: "arrow.down", action: "reverse", enabled: ready)
                             }.frame(maxWidth: .infinity)
                             Divider()
-                            Button { model.sendIntent(action: "summon", targetMeters: round.targetMeters, speed: min(driveSpeed, 50)) } label: {
+                            Button { model.sendIntent(action: "summon", targetMeters: round.targetMeters, speed: min(driveSpeed, 80)) } label: {
                                 Label("Summon · stop \(round.targetMeters)m away", systemImage: "location.fill").frame(maxWidth: .infinity)
                             }.buttonStyle(ActionStyle()).disabled(!ready || model.driveStatus?.summonReady != true || !model.connected)
                             if ready && model.driveStatus?.summonReady != true {

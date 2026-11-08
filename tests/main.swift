@@ -31,3 +31,29 @@ let command = MotionCommand(client_id: "test", sequence: 1, sent_at: 1000, actio
 let decodedCommand = try JSONDecoder().decode(MotionCommand.self, from: JSONEncoder().encode(command))
 assert(decodedCommand == command)
 print("Game scoring, expiry, undo, persistence and movement encoding checks passed")
+
+let beamGame = GameStore(defaults: defaults)
+let beamStart = Date(timeIntervalSince1970: 2000)
+beamGame.configure(target: 2)
+beamGame.start(now: beamStart)
+let basket = BeamEvent(id: UUID(), roundID: beamGame.round.id, timestamp: 2001, points: 2)
+let sensor = BeamStatus(available: true, pin: 24, blocked: true, message: "test", breakCount: 1, events: [basket])
+beamGame.applyBeam(sensor)
+beamGame.applyBeam(sensor)
+assert(beamGame.round.score == 2 && beamGame.round.baskets == 1, "Repeated polling cannot double count")
+beamGame.tick(now: beamStart.addingTimeInterval(30))
+var delayed = sensor
+delayed.events = [BeamEvent(id: UUID(), roundID: beamGame.round.id, timestamp: 2029.9, points: 2)]
+beamGame.applyBeam(delayed)
+assert(beamGame.round.score == 4, "Accept a pre-deadline basket delivered after expiry")
+delayed.events = [BeamEvent(id: UUID(), roundID: beamGame.round.id, timestamp: 2030, points: 2)]
+beamGame.applyBeam(delayed)
+assert(beamGame.round.score == 4, "Reject a basket at the deadline")
+beamGame.reset(); beamGame.start(now: Date(timeIntervalSince1970: 2040))
+beamGame.applyBeam(sensor)
+assert(beamGame.round.score == 0, "No old-round basket leakage")
+beamGame.end(now: Date(timeIntervalSince1970: 2042))
+delayed.events = [BeamEvent(id: UUID(), roundID: beamGame.round.id, timestamp: 2043, points: 2)]
+beamGame.applyBeam(delayed)
+assert(beamGame.round.score == 0, "No basket after early end")
+print("Beam event deduplication, deadline, delayed delivery and round isolation passed")

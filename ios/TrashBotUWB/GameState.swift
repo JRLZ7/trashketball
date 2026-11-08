@@ -47,16 +47,29 @@ final class GameStore: ObservableObject {
         round.shots.append(Shot(made: made, points: made ? round.targetMeters : 0))
         saveBest()
     }
+    func applyBeam(_ status: BeamStatus) {
+        guard let start = round.startedAt, let end = round.endsAt else { return }
+        var known = Set(round.shots.map(\.id))
+        let additions = status.events.filter { event in
+            event.roundID == round.id && event.timestamp.isFinite &&
+            event.timestamp >= start.timeIntervalSince1970 && event.timestamp < end.timeIntervalSince1970 &&
+            event.points == round.targetMeters && known.insert(event.id).inserted
+        }.prefix(max(0, 256 - round.shots.count))
+        guard !additions.isEmpty else { return }
+        round.shots.append(contentsOf: additions.map { Shot(id: $0.id, made: true, points: $0.points) })
+        saveBest()
+    }
     func undo(now: Date = .now) {
         guard round.isActive(at: now), !round.shots.isEmpty else { return }
         round.shots.removeLast()
         // Best is committed at round end, so undo never leaves a phantom record.
     }
     func tick(now: Date = .now) {
-        if round.startedAt != nil && !round.finished && round.secondsRemaining(at: now) == 0 { end() }
+        if round.startedAt != nil && !round.finished && round.secondsRemaining(at: now) == 0 { end(now: now) }
     }
-    func end() {
+    func end(now: Date = .now) {
         guard round.startedAt != nil else { return }
+        if let deadline = round.endsAt, now < deadline { round.endsAt = now }
         round.finished = true
         saveBest()
     }
@@ -89,6 +102,7 @@ struct DriveStatus: Codable {
 struct PiReply: Decodable {
     var drive: DriveStatus?
     var error: String?
+    var beam: BeamStatus?
 }
 
 struct MotionCommand: Codable, Equatable {
@@ -99,4 +113,20 @@ struct MotionCommand: Codable, Equatable {
     var action: String
     var targetMeters: Int
     var speed: Int
+}
+
+struct BeamEvent: Codable, Equatable {
+    var id: UUID
+    var roundID: UUID
+    var timestamp: Double
+    var points: Int
+}
+
+struct BeamStatus: Codable, Equatable {
+    var available: Bool
+    var pin: Int
+    var blocked: Bool?
+    var message: String
+    var breakCount: Int
+    var events: [BeamEvent]
 }

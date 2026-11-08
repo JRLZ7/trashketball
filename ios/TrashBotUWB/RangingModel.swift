@@ -20,6 +20,11 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         localRound = round
         if connected && !isRobot { sendMessage(kind: "round", value: round) }
     }
+    @Published var beamStatus: BeamStatus?
+    @Published var beamUpdated: Date?
+    func beamIsLive(at date: Date) -> Bool {
+        beamUpdated.map { date.timeIntervalSince($0) < 1 && date.timeIntervalSince($0) >= 0 } ?? false
+    }
     @Published var driveStatus: DriveStatus?
     @Published var driveUpdated: Date?
     @Published var activeAction: String?
@@ -33,11 +38,11 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     func driveIsLive(at now: Date) -> Bool {
         driveUpdated.map { now.timeIntervalSince($0) < 1 } ?? false
     }
-    func sendIntent(action: String, targetMeters: Int, speed: Int = 50) {
+    func sendIntent(action: String, targetMeters: Int, speed: Int = 80) {
         if action == "stop" { stopMotion(); return }
         beginMotion(action: action, targetMeters: targetMeters, speed: speed)
     }
-    func beginMotion(action: String, targetMeters: Int = 2, speed: Int = 50) {
+    func beginMotion(action: String, targetMeters: Int = 2, speed: Int = 80) {
         guard !isRobot, running, endpoint != nil else { driveError = "Enter the Pi URL and token, then connect."; return }
         guard driveIsLive(at: .now), driveStatus?.enabled == true else { driveError = "Pi motor bridge is not ready."; return }
         if action == "summon" && (!connected || driveStatus?.summonReady != true) {
@@ -56,6 +61,11 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                                action: "stop", targetMeters: 2, speed: 25)
         activeAction = nil
         sendControl(force: true)
+    }
+    private func applyBeamReply(_ beam: BeamStatus?) {
+        guard let beam else { return }
+        if beamStatus != beam { beamStatus = beam }
+        beamUpdated = .now
     }
     private func applyDrive(_ status: DriveStatus) {
         driveStatus = status; driveUpdated = .now
@@ -79,6 +89,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                 guard let self, self.generation == current, self.motion?.id == command.id else { return }
                 self.controlRequest = nil
                 if let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data) {
+                    self.applyBeamReply(reply.beam)
                     if let status = reply.drive {
                         self.applyDrive(status)
                         if status.commandID != command.id { self.motion = nil; self.activeAction = nil }
@@ -223,6 +234,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         request?.cancel(); request = nil
         controlRequest = nil
         driveStatus = nil; driveUpdated = nil; driveError = nil
+        beamStatus = nil; beamUpdated = nil
         piUnavailable = false; nextUploadAt = .distantPast; uploadBackoff = 0.25
         advertiser?.stopAdvertisingPeer(); advertiser = nil
         browser?.stopBrowsingForPeers(); browser = nil
@@ -283,6 +295,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                 let httpCode = (response as? HTTPURLResponse)?.statusCode
                 if error == nil, httpCode == 200,
                    let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data), let status = reply.drive {
+                    self.applyBeamReply(reply.beam)
                     self.piUnavailable = false
                     self.uploadBackoff = 0.25
                     self.nextUploadAt = .distantPast

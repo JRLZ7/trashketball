@@ -109,6 +109,28 @@ class ReceiverTests(unittest.TestCase):
         finally:
             receiver.controller = Controller()
 
+    def test_beam_events_in_phone_reply(self):
+        from scoring import BeamScorer, SWIFT_EPOCH
+        previous = receiver.scorer
+        now = time.time()
+        clock = [now]
+        receiver.scorer = BeamScorer(clock=lambda: clock[0], wall=lambda: clock[0])
+        receiver.scorer.available = True
+        game = dict(id='sensor-round', targetMeters=2, durationSeconds=30, finished=False,
+                    startedAt=now-SWIFT_EPOCH, endsAt=now-SWIFT_EPOCH+30, shots=[])
+        try:
+            sample = {**self.sample(), 'role': 'user', 'game': game}
+            self.assertEqual(self.call('/measurements', sample)[0], 200)
+            receiver.scorer.edge(False); clock[0] += .1; receiver.scorer.edge(True)
+            reply = self.call('/measurements', sample)[1]
+            self.assertTrue(reply['beam']['available'])
+            self.assertEqual(reply['beam']['pin'], 24)
+            self.assertEqual(reply['beam']['events'][0]['points'], 2)
+            first = reply['beam']['events'][0]['id']
+            self.assertEqual(self.call('/status')[1]['beam']['events'][0]['id'], first)
+        finally:
+            receiver.scorer = previous
+
     def test_invalid_payloads(self):
         for patch in ({'distance_m': -1}, {'distance_m': float('nan')},
                       {'direction': {'x': 0}}, {'age_s': 2}, {'fresh': False}, {'role': 'motor'}):

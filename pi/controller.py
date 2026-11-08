@@ -127,8 +127,8 @@ class Controller:
         if data['id'] in self.closed_ids:
             raise MotionError('Command ended; release and issue a new command')
         speed = data.get('speed', 25)
-        if type(speed) not in (int, float) or not math.isfinite(speed) or not 0 < speed <= 70:
-            raise MotionError('Speed must be greater than zero and at most 70 percent')
+        if type(speed) not in (int, float) or not math.isfinite(speed) or not 0 < speed <= 100:
+            raise MotionError('Speed must be greater than zero and at most 100 percent')
         target = data.get('targetMeters', 2)
         if type(target) is not int or target not in (1, 2, 3):
             raise MotionError('Target must be 1, 2 or 3 m')
@@ -168,13 +168,13 @@ class Controller:
             angle = self.sign * p['angle'] + self.offset
             angle = math.atan2(math.sin(angle), math.cos(angle))
             if abs(angle) > 0.22:
-                turn = min(speed, 50)
+                turn = min(speed, 70)
                 left, right = (turn, -turn) if angle > 0 else (-turn, turn)
                 self.state, self.message = 'turning', 'Turning toward player'
             else:
-                base = min(speed, 50, max(25, (p['distance'] - self.command['targetMeters']) * 18))
+                base = min(speed, 80, max(45, (p['distance'] - self.command['targetMeters']) * 18))
                 correction = angle * 25
-                left, right = max(0, min(50, base + correction)), max(0, min(50, base - correction))
+                left, right = max(0, min(80, base + correction)), max(0, min(80, base - correction))
                 self.state, self.message = 'approaching', 'Approaching player'
         else:
             left, right = {'forward': (speed, speed), 'reverse': (-speed, -speed),
