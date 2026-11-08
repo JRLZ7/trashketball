@@ -251,7 +251,7 @@ struct ContentView: View {
                 Button("Stop", role: .destructive) { model.stopMotion() }
                     .buttonStyle(.bordered).disabled(!model.running)
             }
-            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. Floor height is detected automatically. Driving uses fixed 50% forward / 45% turn commands and the Pi's existing PWM cap. Keep space around the can for turns.")
+            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Driving uses fixed 50% forward / 45% turn commands and the Pi's existing PWM cap. Keep space around the can for turns.")
                 .font(.caption).foregroundStyle(.secondary)
         }.card()
     }

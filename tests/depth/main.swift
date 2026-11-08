@@ -172,3 +172,25 @@ let actualBlocked = DepthGeometry.estimate(samples:actualScene.samples+actualBox
 assert(abs(actualBlocked.nearestObstacle!-0.5) < 0.001)
 assert(guidance(corridor:actualBlocked).action == "stop", "Correcting floor must not turn a real box green")
 print("Measured-floor obstacle preservation passed")
+
+
+var mountedReference = FloorReference()
+mountedReference.initializeFromMount(cameraY:0,trackingNormal:false,timestamp:0)
+assert(mountedReference.y == nil)
+mountedReference.initializeFromMount(cameraY:0,trackingNormal:true,timestamp:0.2)
+assert(abs(mountedReference.y! + 0.25) < 0.001)
+mountedReference.initializeFromMount(cameraY:0.3,trackingNormal:true,timestamp:0.4)
+assert(abs(mountedReference.y! + 0.25) < 0.001, "Camera movement must not move the floor reference")
+assert(mountedReference.update(candidate:nil,trackingNormal:true,timestamp:1.5) == nil, "Mount seed expires without observed confirmation")
+let confirmedMount = FloorCandidate(y:-0.27,source:"test floor")
+for time in [1.6,1.8,2.0] { _ = mountedReference.update(candidate:confirmedMount,trackingNormal:true,timestamp:time) }
+assert(mountedReference.isReliable(at:2.0) && mountedReference.source == "test floor")
+mountedReference.reset()
+mountedReference.initializeFromMount(cameraY:0.1,trackingNormal:true,timestamp:3)
+assert(abs(mountedReference.y! + 0.15) < 0.001)
+let lowMountedScene = syntheticFloor(height:0.25,pitch:0.3)
+let lowOrigin = SIMD3<Float>(0,0,0)
+let lowCandidate = DepthFloorDetection.candidate(samples:lowMountedScene.samples,origin:lowOrigin)!
+let lowEstimate = DepthGeometry.estimate(samples:lowMountedScene.samples,origin:lowOrigin,forward:SIMD3(0,0,-1),floorY:lowCandidate.y,width:0.46)
+assert(lowEstimate.nearestObstacle == nil && lowEstimate.observedFreeDistance >= 0.65)
+print("25 cm mount: initialization, fixed world floor, expiry, confirmation, reset and downward-view floor checks passed")

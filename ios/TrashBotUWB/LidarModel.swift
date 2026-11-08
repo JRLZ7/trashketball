@@ -233,6 +233,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
                 return FloorCandidate(y:p.y,source:"ARKit detected floor")
             }.min(by: { $0.y < $1.y })
             let candidate = planeFloor ?? DepthFloorDetection.candidate(samples:samples,origin:origin)
+            floor.initializeFromMount(cameraY:origin.y,trackingNormal:trackingNormal,timestamp:frame.timestamp)
             let oldFloor = floor.y
             let floorY = floor.update(candidate:candidate,trackingNormal:trackingNormal,timestamp:frame.timestamp)
             result.floorStatus = floorY == nil ? "Looking for a stable floor · point camera down" : floor.source

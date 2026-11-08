@@ -79,3 +79,5 @@ The experimental **Lab → Local map** combines LiDAR floor/obstacle cells with 
 **Locate → Guided approach** on the can phone now previews direct UWB steering with live LiDAR checks, then can send simple forward/left/right/stop commands to the existing Pi API. It stops on close obstacles, missing floor coverage, arrival, stale tracking or control failures, and requires an explicit restart. Preview works without the Pi; actual movement requires a connected, stopped motor bridge. The older player-side Summon remains labeled **Legacy Summon** because it does not use LiDAR. See [guided approach setup and testing](docs/guided-approach.md).
 
 Floor detection now measures the actual floor from ARKit floor anchors or broad horizontal depth surfaces instead of assuming the lens is 44 cm high. Lab and guided preview show measured camera height and first-visible-floor distance; an unseen near-floor band still blocks movement.
+
+Measured camera mount height is **25 cm** (floor to middle camera). This now seeds the floor reference automatically, while detected floor surfaces continue to confirm/refine it.

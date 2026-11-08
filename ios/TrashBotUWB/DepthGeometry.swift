@@ -70,6 +70,7 @@ enum DepthGeometry {
 enum AssumedRobotDimensions {
     static let width: Float = 0.30
     static let bucketHeight: Float = 0.44
+    static let cameraHeight: Float = 0.25
     static let sideClearance: Float = 0.08
 }
 
@@ -84,6 +85,13 @@ struct FloorReference {
     private var pending: FloorCandidate?
     private var count = 0
     private var lastObserved: TimeInterval = -.infinity
+    // The measured mount height seeds the world floor once; camera motion must not drag it along.
+    mutating func initializeFromMount(cameraY: Float, trackingNormal: Bool, timestamp: TimeInterval) {
+        guard y == nil, trackingNormal, cameraY.isFinite else { return }
+        y = cameraY-AssumedRobotDimensions.cameraHeight
+        source = "25 cm measured mount · awaiting surface confirmation"
+        lastObserved = timestamp
+    }
     mutating func update(candidate: FloorCandidate?, trackingNormal: Bool, timestamp: TimeInterval) -> Float? {
         guard trackingNormal, let candidate, candidate.y.isFinite else {
             pending = nil; count = 0
