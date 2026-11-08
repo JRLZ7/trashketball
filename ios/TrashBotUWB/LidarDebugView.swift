@@ -38,7 +38,7 @@ struct LidarDebugView: View {
                                 Canvas { context, size in
                                     for dot in lidar.snapshot.dots {
                                         let point = CGPoint(x: dot.point.x*size.width, y: dot.point.y*size.height)
-                                        let color: Color = dot.floor ? .green.opacity(0.5) : dot.depth < 1 ? .red.opacity(0.75) : dot.depth < 2 ? .orange.opacity(0.65) : .cyan.opacity(0.45)
+                                        let color: Color = !lidar.snapshot.calibrated ? .gray.opacity(0.5) : dot.floor ? .green.opacity(0.5) : dot.depth < 1 ? .red.opacity(0.75) : dot.depth < 2 ? .orange.opacity(0.65) : .cyan.opacity(0.45)
                                         context.fill(Path(ellipseIn: CGRect(x: point.x-3, y: point.y-3, width: 6, height: 6)), with: .color(color))
                                     }
                                     if lidar.snapshot.polygon.count == 4 {
@@ -76,6 +76,9 @@ struct LidarDebugView: View {
                         Text(live ? lidar.snapshot.corridor.message : "Unknown · no recent depth").font(.title3.bold())
                         LabeledContent("Nearest forward obstacle", value: nearestValue(live: live))
                         LabeledContent("Observed clear floor", value: live && lidar.snapshot.calibrated && lidar.snapshot.corridor.observedFreeDistance > 0 ? String(format: "%.2f m", lidar.snapshot.corridor.observedFreeDistance) : "Unknown")
+                        LabeledContent("Floor detection", value: live ? lidar.snapshot.floorStatus : "Not live")
+                        LabeledContent("Measured camera height", value: live ? lidar.snapshot.measuredCameraHeight.map { String(format: "%.0f cm", $0*100) } ?? "Unknown" : "—")
+                        LabeledContent("First visible floor", value: live ? lidar.snapshot.corridor.firstObservedFloorDistance.map { String(format: "%.2f m ahead", $0) } ?? "Unknown" : "—")
                         LabeledContent("Tracking", value: live ? lidar.snapshot.tracking : "Not live")
                         LabeledContent("Usable depth", value: live ? String(format: "%.0f%%", lidar.snapshot.depthCoverage*100) : "—")
                         LabeledContent("Corridor floor coverage", value: live ? String(format: "%.0f%%", lidar.snapshot.corridor.floorCoverage*100) : "—")
@@ -87,12 +90,11 @@ struct LidarDebugView: View {
                     Text("Assumed bucket setup").font(.headline)
                     LabeledContent("Bucket width", value: "30 cm")
                     LabeledContent("Bucket height", value: "44 cm")
-                    LabeledContent("Assumed camera height", value: "44 cm")
-                    Text("The floor estimate initializes automatically when tracking is Normal, including after a session reset. No calibration tap is needed. Camera height temporarily assumes the lens is at bucket height.")
+                    Text("Floor height is detected automatically from ARKit floor planes or a broad horizontal depth surface. The camera is no longer assumed to be 44 cm high. Hold still briefly while the floor estimate stabilizes; no calibration tap is needed.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("Mount the rear camera forward and slightly down. The yellow corridor is 46 cm wide including clearance, with a 3 m lookahead.")
+                    Text("Mount the rear camera forward and tilted down enough to see nearby floor. The yellow corridor is 46 cm wide including clearance, with a 3 m lookahead.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("Green dots: assumed floor. Other dots: red near, orange middle, cyan far. Colors alone are not obstacle classifications.").font(.caption).foregroundStyle(.secondary)
+                    Text("Green dots: detected floor. Gray: floor not established yet. Other dots: red near, orange middle, cyan far. Colors alone are not obstacle classifications.").font(.caption).foregroundStyle(.secondary)
                     if let error = lidar.error { Text(error).font(.footnote).foregroundStyle(.orange) }
                 }.labCard()
                 Text("Box test: place a box in front, move it outside the yellow corridor, then remove it. Check distances against a tape measure. This experiment does not steer or avoid obstacles.").font(.footnote).foregroundStyle(.secondary)

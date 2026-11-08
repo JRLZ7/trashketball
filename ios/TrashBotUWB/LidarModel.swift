@@ -18,6 +18,8 @@ struct LidarSnapshot {
     var polygon: [CGPoint] = []
     var yawDegrees: Float?
     var calibrated = false
+    var floorStatus = "Looking for an actual floor surface"
+    var measuredCameraHeight: Float?
     var mapCells: [MapCell] = []
     var robotPosition: SIMD2<Float>?
     var robotForward: SIMD2<Float>?
@@ -108,6 +110,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
     private func configuration() -> ARWorldTrackingConfiguration {
         let config = ARWorldTrackingConfiguration()
         config.worldAlignment = .gravity
+        config.planeDetection = [.horizontal]
         config.isCollaborationEnabled = false
         config.userFaceTrackingEnabled = false
         config.initialWorldMap = nil
@@ -163,7 +166,6 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         let origin = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
         let trackingNormal: Bool
         if case .normal = frame.camera.trackingState { trackingNormal = true } else { trackingNormal = false }
-        let floorY = floor.update(cameraY: origin.y, trackingNormal: trackingNormal)
         let forward = SIMD3<Float>(-transform.columns.2.x, 0, -transform.columns.2.z)
         if trackingNormal {
             result.robotPosition = SIMD2(origin.x,origin.z)
@@ -189,25 +191,57 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
             let cx = intrinsics.columns.2.x*sx, cy = intrinsics.columns.2.y*sy
             let display = frame.displayTransform(for: .portrait, viewportSize: viewport)
             var samples: [DepthSample] = []
+            var overlay: [(point: CGPoint, depth: Float, world: SIMD3<Float>)] = []
             var attempted = 0
-            for y in stride(from: 0, to: height, by: 4) {
+            func pointAt(_ x: Int, _ y: Int) -> SIMD3<Float>? {
+                guard x < width, y < height else { return nil }
+                let d = base.advanced(by:y*rowBytes).assumingMemoryBound(to:Float32.self)[x]
+                let c = confBase.advanced(by:y*confRowBytes).assumingMemoryBound(to:UInt8.self)[x]
+                guard c >= 1, d.isFinite, d >= 0.15, d <= 5 else { return nil }
+                return DepthProjection.worldPoint(x:Float(x),y:Float(y),depth:d,fx:fx,fy:fy,cx:cx,cy:cy,camera:transform)
+            }
+            for y in stride(from: 0, to: height, by: 2) {
                 let depths = base.advanced(by: y*rowBytes).assumingMemoryBound(to: Float32.self)
                 let confidences = confBase.advanced(by: y*confRowBytes).assumingMemoryBound(to: UInt8.self)
-                for x in stride(from: 0, to: width, by: 4) {
+                for x in stride(from: 0, to: width, by: 2) {
                     attempted += 1
                     let d = depths[x], c = confidences[x]
                     guard c >= 1, d.isFinite, d >= 0.15, d <= 5 else { continue }
-                    let cameraPoint = SIMD4<Float>((Float(x)-cx)/fx*d, -(Float(y)-cy)/fy*d, -d, 1)
-                    let world = transform*cameraPoint
-                    let point = SIMD3<Float>(world.x, world.y, world.z)
-                    samples.append(DepthSample(world: point, confidence: c))
-                    let uv = CGPoint(x: CGFloat(x)/CGFloat(width), y: CGFloat(y)/CGFloat(height)).applying(display)
-                    if uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 {
-                        result.dots.append(DepthDot(point: uv, depth: d, floor: floorY.map { abs(point.y-$0) <= 0.06 } ?? false))
+                    let point = DepthProjection.worldPoint(x:Float(x),y:Float(y),depth:d,fx:fx,fy:fy,cx:cx,cy:cy,camera:transform)
+                    let horizontal: Bool
+                    if let right = pointAt(x+6,y), let down = pointAt(x,y+6) {
+                        horizontal = DepthProjection.horizontal(point,right,down)
+                    } else { horizontal = false }
+                    samples.append(DepthSample(world: point, confidence: c, horizontal: horizontal))
+                    // Keep camera overlay lightweight; use the denser cloud for map and detection.
+                    if x % 4 == 0 && y % 4 == 0 {
+                        let uv = CGPoint(x: CGFloat(x)/CGFloat(width), y: CGFloat(y)/CGFloat(height)).applying(display)
+                        if uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 {
+                            overlay.append((uv,d,point))
+                        }
                     }
                 }
             }
             result.depthCoverage = attempted > 0 ? Float(samples.count)/Float(attempted) : 0
+            let planeFloor = frame.anchors.compactMap { anchor -> FloorCandidate? in
+                guard let plane = anchor as? ARPlaneAnchor, plane.alignment == .horizontal,
+                      plane.classification == .floor, plane.planeExtent.width >= 0.4,
+                      plane.planeExtent.height >= 0.4 else { return nil }
+                let p = plane.transform*SIMD4(plane.center.x,plane.center.y,plane.center.z,1)
+                guard origin.y-p.y > 0.15, origin.y-p.y < 2.3,
+                      simd_distance(SIMD2(origin.x,origin.z),SIMD2(p.x,p.z)) < 4 else { return nil }
+                return FloorCandidate(y:p.y,source:"ARKit detected floor")
+            }.min(by: { $0.y < $1.y })
+            let candidate = planeFloor ?? DepthFloorDetection.candidate(samples:samples,origin:origin)
+            let oldFloor = floor.y
+            let floorY = floor.update(candidate:candidate,trackingNormal:trackingNormal,timestamp:frame.timestamp)
+            result.floorStatus = floorY == nil ? "Looking for a stable floor · point camera down" : floor.source
+            if let floorY {
+                result.measuredCameraHeight = origin.y-floorY
+                // A corrected reference invalidates earlier floor/obstacle labels.
+                if oldFloor == nil || abs(floorY-oldFloor!) > 0.02 { localMap.reset() }
+            }
+            result.dots = overlay.map { item in DepthDot(point:item.point,depth:item.depth,floor:floorY.map { y in abs(item.world.y-y) <= 0.06 } ?? false) }
             if let floorY, case .normal = frame.camera.trackingState {
                 result.calibrated = true
                 localMap.update(samples: samples, floorY: floorY, origin: SIMD2(origin.x,origin.z), now: result.timestamp.timeIntervalSince1970)
@@ -222,7 +256,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
                     }
                 }
             } else {
-                result.corridor.message = floorY == nil ? "Unknown · waiting for normal tracking" : "Unknown · tracking is limited"
+                result.corridor.message = floorY == nil ? "Unknown · detecting actual floor; point camera down" : "Unknown · tracking is limited"
             }
             result.message = "Depth processed on this iPhone · 5 Hz"
         } else { result.message = "Waiting for LiDAR depth and confidence" }

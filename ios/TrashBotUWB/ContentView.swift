@@ -233,6 +233,15 @@ struct ContentView: View {
                 }
             }
             Text(model.approachDecision.message).font(.headline)
+            if model.approachPreviewing {
+                Text("Floor: \(model.lidar.snapshot.floorStatus)").font(.caption).foregroundStyle(.secondary)
+                if let height = model.lidar.snapshot.measuredCameraHeight {
+                    Text(String(format: "Measured camera height: %.0f cm", height*100)).font(.caption).foregroundStyle(.secondary)
+                }
+                if let first = model.lidar.snapshot.corridor.firstObservedFloorDistance {
+                    Text(String(format: "First visible floor: %.2f m ahead", first)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Text(model.approachNote).font(.footnote).foregroundStyle(.secondary)
             HStack {
                 Button { model.beginApproach() } label: {
@@ -242,7 +251,7 @@ struct ContentView: View {
                 Button("Stop", role: .destructive) { model.stopMotion() }
                     .buttonStyle(.bordered).disabled(!model.running)
             }
-            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward, slightly down, at the assumed 44 cm height. Driving uses fixed 50% forward / 45% turn commands and the Pi's existing PWM cap. Keep space around the can for turns.")
+            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. Floor height is detected automatically. Driving uses fixed 50% forward / 45% turn commands and the Pi's existing PWM cap. Keep space around the can for turns.")
                 .font(.caption).foregroundStyle(.secondary)
         }.card()
     }

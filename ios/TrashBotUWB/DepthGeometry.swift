@@ -4,11 +4,13 @@ import simd
 struct DepthSample {
     var world: SIMD3<Float>
     var confidence: UInt8
+    var horizontal = false
 }
 
 struct CorridorEstimate {
     var nearestObstacle: Float?
     var observedFreeDistance: Float = 0
+    var firstObservedFloorDistance: Float?
     var floorCoverage: Float = 0
     var message: String = "Unknown · waiting for automatic floor reference"
 }
@@ -26,6 +28,7 @@ enum DepthGeometry {
         let offset: Float = 0.15, step: Float = 0.25
         let rows = Int(ceil((lookahead-offset)/step)), cols = 5
         var floorCells = Set<Int>()
+        var nearestFloorByRow: [Int: Float] = [:]
         var obstacleCells: [Int: (count: Int, nearest: Float)] = [:]
         for sample in samples where sample.confidence >= 1 {
             let p = sample.world
@@ -36,7 +39,10 @@ enum DepthGeometry {
             let row = min(rows-1, Int((along-offset)/step))
             let col = min(cols-1, max(0, Int((across/width + 0.5)*Float(cols))))
             let key = row*cols+col, height = p.y-floorY
-            if abs(height) <= 0.06 { floorCells.insert(key) }
+            if abs(height) <= 0.06 {
+                floorCells.insert(key)
+                nearestFloorByRow[row] = min(nearestFloorByRow[row] ?? along,along)
+            }
             if height >= 0.08 && height <= 1.5 {
                 let old = obstacleCells[key] ?? (0, along)
                 obstacleCells[key] = (old.count+1, min(old.nearest, along))
@@ -44,6 +50,9 @@ enum DepthGeometry {
         }
         let occupied = obstacleCells.filter { $0.value.count >= 3 }
         let nearest = occupied.values.map(\.nearest).min()
+        let firstObserved = (0..<rows).first { row in
+            (0..<cols).filter { floorCells.contains(row*cols+$0) }.count >= 3
+        }.flatMap { nearestFloorByRow[$0] }
         var free: Float = 0
         for row in 0..<rows {
             let seen = (0..<cols).filter { floorCells.contains(row*cols+$0) }.count
@@ -51,29 +60,94 @@ enum DepthGeometry {
             guard seen >= 3, !blocked else { break }
             free = min(lookahead, offset+Float(row+1)*step)
         }
-        return CorridorEstimate(nearestObstacle: nearest, observedFreeDistance: free,
+        return CorridorEstimate(nearestObstacle: nearest, observedFreeDistance: free, firstObservedFloorDistance: firstObserved,
                                 floorCoverage: Float(floorCells.count)/Float(rows*cols),
                                 message: nearest != nil ? "Obstacle ahead" : free >= 0.65 ? "Observed floor clear" : "Unknown · insufficient floor coverage")
     }
 }
 
-// Provisional dimensions supplied for the orange bucket. Camera height is an explicit assumption.
+// Provisional bucket dimensions; camera height is measured from detected floor.
 enum AssumedRobotDimensions {
     static let width: Float = 0.30
     static let bucketHeight: Float = 0.44
-    static let cameraHeight: Float = 0.44
     static let sideClearance: Float = 0.08
+}
+
+struct FloorCandidate {
+    var y: Float
+    var source: String
 }
 
 struct FloorReference {
     private(set) var y: Float?
-    let cameraHeight: Float
-    init(cameraHeight: Float = AssumedRobotDimensions.cameraHeight) { self.cameraHeight = cameraHeight }
-    mutating func update(cameraY: Float, trackingNormal: Bool) -> Float? {
-        if y == nil && trackingNormal && cameraY.isFinite { y = cameraY-cameraHeight }
-        return y
+    private(set) var source = "Looking for an actual floor surface"
+    private var pending: FloorCandidate?
+    private var count = 0
+    private var lastObserved: TimeInterval = -.infinity
+    mutating func update(candidate: FloorCandidate?, trackingNormal: Bool, timestamp: TimeInterval) -> Float? {
+        guard trackingNormal, let candidate, candidate.y.isFinite else {
+            pending = nil; count = 0
+            return isReliable(at: timestamp) ? y : nil
+        }
+        // Never step up onto a box/table when the real floor is already known.
+        if let y, candidate.y > y+0.12 {
+            pending = nil; count = 0
+            return isReliable(at: timestamp) ? y : nil
+        }
+        if let pending, abs(pending.y-candidate.y) < 0.03 { count += 1 }
+        else { pending = candidate; count = 1 }
+        if count >= 3 {
+            if let old = y, abs(old-candidate.y) < 0.06 { y = old*0.7+candidate.y*0.3 }
+            else { y = candidate.y }
+            source = candidate.source
+            lastObserved = timestamp
+        }
+        return isReliable(at: timestamp) ? y : nil
     }
-    mutating func reset() { y = nil }
+    func isReliable(at time: TimeInterval) -> Bool { y != nil && time-lastObserved >= 0 && time-lastObserved < 1.2 }
+    mutating func reset() { self = FloorReference() }
+}
+
+// Native depth-image coordinates are unprojected before applying the AR camera pose.
+enum DepthProjection {
+    static func worldPoint(x: Float, y: Float, depth: Float, fx: Float, fy: Float,
+                           cx: Float, cy: Float, camera: simd_float4x4) -> SIMD3<Float> {
+        let world = camera*SIMD4((x-cx)/fx*depth, -(y-cy)/fy*depth, -depth, 1)
+        return SIMD3(world.x,world.y,world.z)
+    }
+    static func horizontal(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>) -> Bool {
+        let u = b-a, v = c-a
+        guard simd_length(u) < 0.3, simd_length(v) < 0.3 else { return false }
+        let n = simd_cross(u,v), length = simd_length(n)
+        return length > 0.000001 && abs(n.y)/length > 0.94
+    }
+}
+
+enum DepthFloorDetection {
+    // Find broad, gravity-horizontal surfaces, not a thin height band on a wall.
+    static func candidate(samples: [DepthSample], origin: SIMD3<Float>) -> FloorCandidate? {
+        var bins: [Int: [SIMD3<Float>]] = [:]
+        for s in samples where s.confidence >= 1 && s.horizontal {
+            let p = s.world, below = origin.y-p.y
+            guard p.x.isFinite, p.y.isFinite, p.z.isFinite, below > 0.15, below < 2.3,
+                  simd_distance(SIMD2(p.x,p.z),SIMD2(origin.x,origin.z)) < 3 else { continue }
+            bins[Int((p.y/0.04).rounded()), default: []].append(p)
+        }
+        var candidates: [(height: Float, count: Int)] = []
+        for key in bins.keys {
+            let points = ((bins[key-1] ?? [])+(bins[key] ?? [])+(bins[key+1] ?? []))
+            guard points.count >= 40 else { continue }
+            let xs = points.map(\.x), zs = points.map(\.z)
+            guard xs.max()!-xs.min()! >= 0.4, zs.max()!-zs.min()! >= 0.4 else { continue }
+            let cells = Set(points.map { MapCellKey(x:Int(($0.x/0.15).rounded(.down)),z:Int(($0.z/0.15).rounded(.down))) })
+            guard cells.count >= 12 else { continue }
+            let heights = points.map(\.y).sorted()
+            candidates.append((heights[heights.count/2], points.count))
+        }
+        let maxSupport = candidates.map(\.count).max() ?? 0
+        guard let best = candidates.filter({ $0.count >= max(40,maxSupport/4) }).min(by: { $0.height < $1.height }) else { return nil }
+        return FloorCandidate(y: best.height, source: "Depth floor estimate")
+    }
 }
 
 struct MapCellKey: Hashable {
@@ -175,6 +249,9 @@ enum GuidedApproach {
             if obstacle < 0.75 { return stop("Blocked · obstacle within 75 cm") }
         }
         guard corridor.observedFreeDistance.isFinite, corridor.observedFreeDistance >= 0.65 else {
+            if let first = corridor.firstObservedFloorDistance, first >= 0.4 {
+                return stop(String(format: "Stop · floor visible only from %.2f m; tilt camera farther down", first))
+            }
             return stop("Stop · insufficient observed floor ahead")
         }
         // Turn until within ~6°, then allow forward motion until error exceeds ~13°.

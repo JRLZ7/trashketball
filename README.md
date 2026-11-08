@@ -69,7 +69,7 @@ Controller/HTTP tests use injected fake motors, including watchdog, tracking los
 
 ## Experimental LiDAR Lab
 
-On the can phone, open **Lab** for a camera/depth overlay, AR tracking, automatic floor initialization using the provisional 30 cm width / 44 cm camera-height assumptions, and a forward-corridor obstacle estimate. Processing runs on the iPhone. The Pi receives an inspection hold that stops and blocks motors while the screen is open; restart the updated Pi server before testing. Without a confirmed hold, disconnect motor power before using the standalone preview option. This milestone does not steer or plan a path.
+On the can phone, open **Lab** for a camera/depth overlay, AR tracking, automatic measured-floor detection with the provisional 30 cm bucket width, and a forward-corridor obstacle estimate. Processing runs on the iPhone. The Pi receives an inspection hold that stops and blocks motors while the screen is open; restart the updated Pi server before testing. Without a confirmed hold, disconnect motor power before using the standalone preview option. This milestone does not steer or plan a path.
 
 See [LiDAR Lab setup, box test and limitations](docs/lidar-lab.md). The phone shares one ARKit session between depth, preview and UWB camera assistance. Physical-device testing is required for sensor accuracy and UWB coexistence; Simulator only verifies unavailable states and navigation.
 
@@ -77,3 +77,5 @@ The experimental **Lab → Local map** combines LiDAR floor/obstacle cells with 
 
 
 **Locate → Guided approach** on the can phone now previews direct UWB steering with live LiDAR checks, then can send simple forward/left/right/stop commands to the existing Pi API. It stops on close obstacles, missing floor coverage, arrival, stale tracking or control failures, and requires an explicit restart. Preview works without the Pi; actual movement requires a connected, stopped motor bridge. The older player-side Summon remains labeled **Legacy Summon** because it does not use LiDAR. See [guided approach setup and testing](docs/guided-approach.md).
+
+Floor detection now measures the actual floor from ARKit floor anchors or broad horizontal depth surfaces instead of assuming the lens is 44 cm high. Lab and guided preview show measured camera height and first-visible-floor distance; an unseen near-floor band still blocks movement.

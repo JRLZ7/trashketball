@@ -36,14 +36,18 @@ assert(rotatedResult.nearestObstacle == nil && rotatedResult.observedFreeDistanc
 print("Depth geometry: floor, box, footprint, confidence, unknown space and heading checks passed")
 
 var reference = FloorReference()
-assert(reference.update(cameraY: 0, trackingNormal: false) == nil)
-assert(abs(reference.update(cameraY: 0, trackingNormal: true)! + 0.44) < 0.001)
-assert(abs(reference.update(cameraY: 0.2, trackingNormal: true)! + 0.44) < 0.001, "Do not drag the floor along with the camera")
+let measured = FloorCandidate(y: -1.05, source: "test measured floor")
+assert(reference.update(candidate: measured, trackingNormal: false, timestamp: 0) == nil)
+assert(reference.update(candidate: measured, trackingNormal: true, timestamp: 0.2) == nil)
+assert(reference.update(candidate: measured, trackingNormal: true, timestamp: 0.4) == nil)
+assert(abs(reference.update(candidate: measured, trackingNormal: true, timestamp: 0.6)! + 1.05) < 0.001)
+assert(reference.update(candidate: nil, trackingNormal: true, timestamp: 0.8) != nil, "Brief dropout retained")
+assert(reference.update(candidate: nil, trackingNormal: true, timestamp: 2) == nil, "Unconfirmed floor expires")
+assert(reference.update(candidate: FloorCandidate(y: -0.5,source: "box top"), trackingNormal: true, timestamp: 2.2) == nil, "Do not move the floor onto a box")
 reference.reset()
-assert(reference.update(cameraY: 0.2, trackingNormal: false) == nil)
-assert(abs(reference.update(cameraY: 0.2, trackingNormal: true)! + 0.24) < 0.001, "Auto-initialize after reset")
+assert(reference.y == nil)
 assert(abs(AssumedRobotDimensions.width + 2*AssumedRobotDimensions.sideClearance - 0.46) < 0.001)
-print("Automatic floor reference: normal tracking, persistence, reset and dimensions passed")
+print("Measured floor reference: stability, tracking, expiry, elevated surfaces and resets passed")
 
 func near(_ a: SIMD2<Float>, _ b: SIMD2<Float>) -> Bool { simd_distance(a,b) < 0.001 }
 let camera = matrix_identity_float4x4
@@ -109,3 +113,62 @@ assert(guidance(angle: 0.5, corridor: CorridorEstimate(nearestObstacle: 0.5, obs
 assert(guidance(corridor: CorridorEstimate()).action == "stop", "Unknown floor must stop")
 assert(guidance(corridor: CorridorEstimate(observedFreeDistance: .nan)).action == "stop")
 print("Guided approach: direct bearing, speed caps, hysteresis, arrival, stale/invalid sensors and obstruction checks passed")
+
+// Reproduce real capture geometry, including different lens heights and downward tilt.
+func syntheticFloor(height: Float, pitch: Float, floorY: Float = -0.25) -> (samples:[DepthSample], camera:simd_float4x4) {
+    var pose = matrix_identity_float4x4
+    let c = cos(pitch), s = sin(pitch)
+    pose.columns.1 = SIMD4(0,c,-s,0)
+    pose.columns.2 = SIMD4(0,s,c,0)
+    pose.columns.3 = SIMD4(0,floorY+height,0,1)
+    func point(_ x: Int, _ y: Int) -> SIMD3<Float>? {
+        let ray = pose*SIMD4((Float(x)-128)/120,-(Float(y)-96)/120,-1,0)
+        guard ray.y < -0.01 else { return nil }
+        let depth = -height/ray.y
+        guard depth >= 0.15, depth <= 5 else { return nil }
+        return DepthProjection.worldPoint(x:Float(x),y:Float(y),depth:depth,fx:120,fy:120,cx:128,cy:96,camera:pose)
+    }
+    var points: [DepthSample] = []
+    for y in stride(from:0,to:186,by:2) {
+        for x in stride(from:0,to:250,by:2) {
+            guard let a = point(x,y), let b = point(x+6,y), let c = point(x,y+6) else { continue }
+            assert(abs(a.y-floorY) < 0.001, "Depth unprojection must keep a tilted floor horizontal")
+            points.append(DepthSample(world:a,confidence:2,horizontal:DepthProjection.horizontal(a,b,c)))
+        }
+    }
+    return (points,pose)
+}
+for height: Float in [0.44,0.8,1.3] {
+    let scene = syntheticFloor(height:height,pitch:0.5)
+    let origin = SIMD3(scene.camera.columns.3.x,scene.camera.columns.3.y,scene.camera.columns.3.z)
+    let detected = DepthFloorDetection.candidate(samples:scene.samples,origin:origin)!
+    assert(abs(detected.y + 0.25) < 0.01, "Detect actual floor regardless of the 44 cm bucket height")
+    let result = DepthGeometry.estimate(samples:scene.samples,origin:origin,forward:SIMD3(0,0,-1),floorY:detected.y,width:0.46)
+    assert(result.nearestObstacle == nil, "Real floor must not become layers of false obstacles")
+    if height == 0.44 { assert(result.observedFreeDistance >= 0.65, "Mounted, downward-facing camera should pass clear-floor check") }
+    var floorMap = LocalDepthMap()
+    floorMap.update(samples:scene.samples,floorY:detected.y,origin:.zero,now:0)
+    assert(floorMap.cells.count > 50 && floorMap.cells.values.allSatisfy { !$0.obstacle }, "Broad floor should create green map cells without false obstacle layers")
+}
+let horizontalSurface = (0..<12).flatMap { x in (0..<12).map { z in
+    DepthSample(world:SIMD3(Float(x)*0.08,Float(0),-0.4-Float(z)*0.08),confidence:2,horizontal:true)
+} }
+assert(DepthFloorDetection.candidate(samples:horizontalSurface,origin:SIMD3(0,0.9,0)) != nil)
+let wall = horizontalSurface.map { DepthSample(world:SIMD3($0.world.x,-$0.world.z,-1),confidence:2,horizontal:false) }
+assert(DepthFloorDetection.candidate(samples:wall,origin:SIMD3(0,1.5,0)) == nil, "A height stripe on a wall is not a floor")
+let smallBoxTop = horizontalSurface.map { DepthSample(world:SIMD3($0.world.x*0.2,0.3,$0.world.z*0.2),confidence:2,horizontal:true) }
+assert(DepthFloorDetection.candidate(samples:smallBoxTop,origin:SIMD3(0,0.9,0)) == nil, "Small box tops cannot initialize the floor")
+assert(DepthFloorDetection.candidate(samples:[],origin:SIMD3(0,0.9,0)) == nil)
+let farFloor = floor.filter { -$0.world.z > 0.7 }
+let unseenNear = estimate(farFloor)
+assert(unseenNear.observedFreeDistance == 0 && unseenNear.firstObservedFloorDistance! >= 0.4, "Distant floor must not fill in the blind near band")
+assert(guidance(corridor:unseenNear).message.contains("tilt camera"))
+print("Capture regressions: varied camera height/pitch, dense green floor map, wall/box rejection and near-floor blind-zone diagnosis passed")
+let actualScene = syntheticFloor(height:0.8,pitch:0.7)
+let actualOrigin = SIMD3<Float>(0,0.55,0)
+let actualFloor = DepthFloorDetection.candidate(samples:actualScene.samples,origin:actualOrigin)!
+let actualBox = (0..<4).map { DepthSample(world:SIMD3<Float>(Float($0)*0.005,0.05,-0.5),confidence:2) }
+let actualBlocked = DepthGeometry.estimate(samples:actualScene.samples+actualBox,origin:actualOrigin,forward:SIMD3(0,0,-1),floorY:actualFloor.y,width:0.46)
+assert(abs(actualBlocked.nearestObstacle!-0.5) < 0.001)
+assert(guidance(corridor:actualBlocked).action == "stop", "Correcting floor must not turn a real box green")
+print("Measured-floor obstacle preservation passed")
