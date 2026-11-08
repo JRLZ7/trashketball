@@ -238,3 +238,12 @@ struct PiClockSync {
         return serverAtReceipt+age
     }
 }
+
+// Direction changes use the same immediate handoff as manual arrows. Small PD
+// speed changes wait for the current reply so they cannot starve acknowledgements.
+enum MotionDispatchPolicy {
+    static func interrupts(current: MotionCommand?, desired: MotionCommand) -> Bool {
+        guard let current else { return false }
+        return current.action != desired.action
+    }
+}

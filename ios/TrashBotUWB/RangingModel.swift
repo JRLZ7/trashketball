@@ -38,7 +38,9 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private var requestedByPlayer = false
     private var playerLease = Date.distantPast
     private var controlRequestID = UUID()
-    private var approachAck = Date.distantPast
+    private var approachAckUptime: TimeInterval = 0
+    private var pendingControlUptime: TimeInterval?
+    private var pendingControlAction: String?
     private var avoidanceNavigator = LocalAvoidanceNavigator()
     var canPreviewApproach: Bool {
         isRobot ? running && sharedARAttached && lidar.supportsDepth && !inspectionActive :
@@ -52,7 +54,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         return approachPreviewing && canPreviewApproach && !approachActive && approachDecision.action != "stop" &&
             canControlPi && driveIsLive(at:.now) && driveStatus?.enabled == true &&
             driveStatus?.state != "fault" && driveStatus?.state != "inspection" && driveStatus?.commandID == nil &&
-            driveStatus?.left == 0 && driveStatus?.right == 0
+            driveStatus?.left == 0 && driveStatus?.right == 0 && motion == nil && controlRequest == nil
     }
     private func requestGuidance(_ action: GuidanceRequest.Action) {
         guard connected else { approachNote = "Connect both phones first."; return }
@@ -131,12 +133,12 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         guard approachDecision.action != "stop" else { approachNote = approachDecision.message; return }
         guard canControlPi, driveIsLive(at: .now), let status = driveStatus, status.enabled,
               status.state != "inspection", status.state != "fault", status.commandID == nil,
-              status.left == 0, status.right == 0 else {
+              status.left == 0, status.right == 0, motion == nil, controlRequest == nil else {
             approachNote = "Pi must be connected and stopped. Stop existing movement first."; return
         }
         driveError = nil
         sensorHold.reset()
-        approachAck = .now
+        approachAckUptime = ProcessInfo.processInfo.systemUptime
         approachActive = true
         approachNote = "Guided approach active · use Stop to end."
         sendMessage(kind: "approach", value: true)
@@ -181,22 +183,31 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                   driveStatus?.commandID == nil, driveStatus?.left == 0, driveStatus?.right == 0 else { return }
             guard sensorHold.ready(depth:lidar.snapshot.timestamp.timeIntervalSince1970,
                                    uwb:updated?.timeIntervalSince1970 ?? 0) else { return }
-            sensorHold.reset(); approachAck = now
+            sensorHold.reset(); approachAckUptime = ProcessInfo.processInfo.systemUptime
             approachNote = "Guided approach active · readings recovered."
         }
-        guard now.timeIntervalSince(approachAck) < 0.6 else {
-            endApproach("Stopped · Pi command acknowledgement stale (600 ms)"); return
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard uptime-approachAckUptime < 0.6 else {
+            let pending = pendingControlUptime.map { String(format:"%.0f ms",(uptime-$0)*1000) } ?? "not queued"
+            endApproach("Stopped · Pi acknowledgement stale: \(pendingControlAction ?? approachDecision.action) reply pending \(pending)"); return
         }
-        // Finish the current request before changing IDs. Canceling every turn starves acknowledgements.
-        guard controlRequest == nil else { return }
         let desired = MotionCommand(decision:approachDecision,clientID:deviceID,target:approachTarget)
+        let interrupt = MotionDispatchPolicy.interrupts(current:motion,desired:desired)
+        // Copy the working manual-arrow handoff for a direction change; only
+        // same-direction speed/trim changes wait for the outstanding request.
+        guard controlRequest == nil || interrupt else { return }
         if motion?.action != desired.action || motion?.speed != desired.speed ||
             motion?.leftPercent != desired.leftPercent || motion?.rightPercent != desired.rightPercent {
-            motion = desired
-            activeAction = approachDecision.action
-            sendControl()
+            issueMotion(desired,interrupt:interrupt)
         }
     }
+    private func issueMotion(_ command: MotionCommand, interrupt: Bool) {
+        motion = command
+        activeAction = command.action
+        if approachActive { approachNote = "Sending \(command.action) · waiting for Pi" }
+        sendControl(force:interrupt)
+    }
+
     private func haltGuidanceMotors() {
         motion = MotionCommand(client_id:deviceID,sequence:0,sent_at:0,action:"stop",targetMeters:approachTarget,speed:100)
         activeAction = nil
@@ -313,10 +324,9 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         }
         guard activeAction != action else { return }
         driveError = nil
-        motion = MotionCommand(client_id: deviceID, sequence: 0, sent_at: 0,
+        let command = MotionCommand(client_id: deviceID, sequence: 0, sent_at: 0,
                                action: action, targetMeters: targetMeters, speed: speed)
-        activeAction = action
-        sendControl(force: true)
+        issueMotion(command,interrupt:true)
     }
     func stopMotion() {
         sensorHold.reset()
@@ -363,6 +373,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         }
         command.sent_at = synchronizedTime ?? Date().timeIntervalSince1970
         motion = command
+        pendingControlUptime = sentUptime; pendingControlAction = command.action
         var req = URLRequest(url: endpoint.deletingLastPathComponent().appendingPathComponent("control"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -373,6 +384,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
             DispatchQueue.main.async {
                 guard let self, self.generation == current, self.controlRequestID == requestID, self.motion?.id == command.id else { return }
                 self.controlRequest = nil
+                self.pendingControlUptime = nil; self.pendingControlAction = nil
                 let requestElapsed = ProcessInfo.processInfo.systemUptime-sentUptime
                 var confirmedMovement = false
                 var confirmedStop = false
@@ -402,7 +414,10 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                     self.motion = nil; self.activeAction = nil
                 }
                 if self.approachActive && command.action != "stop" {
-                    if confirmedMovement { self.approachAck = .now }
+                    if confirmedMovement {
+                        self.approachAckUptime = ProcessInfo.processInfo.systemUptime
+                        self.approachNote = String(format:"Driving · Pi confirmed %@ (%.0f ms)",command.action,requestElapsed*1000)
+                    }
                     else {
                         self.driveError = self.driveError ?? "Pi did not confirm the movement command"
                         self.motion = nil; self.activeAction = nil
@@ -494,7 +509,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     // Keep telemetry uploads from occupying the motor command connection pool.
     private lazy var controlHTTP: URLSession = {
         let config = URLSessionConfiguration.ephemeral
-        config.httpMaximumConnectionsPerHost = 1
+        config.httpMaximumConnectionsPerHost = 2
         config.timeoutIntervalForRequest = 0.6
         config.timeoutIntervalForResource = 0.8
         return URLSession(configuration:config)
@@ -557,6 +572,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         timer?.invalidate(); timer = nil
         request?.cancel(); request = nil
         controlRequest = nil
+        pendingControlUptime = nil; pendingControlAction = nil
         driveStatus = nil; driveUpdated = nil; driveError = nil
         piClock.reset(); piClockStatus = "Waiting for Pi clock synchronization"
         beamStatus = nil; beamUpdated = nil

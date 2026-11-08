@@ -90,6 +90,8 @@ def validate(data):
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    last_control_action = None
     def reply(self, status, body):
         if isinstance(body, dict) and 'drive' in body:
             # Sample immediately before serialization, not at request queue entry.
@@ -99,6 +101,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('Cache-Control', 'no-store')
+        if status >= 400:
+            self.close_connection = True
+            self.send_header('Connection', 'close')
         self.end_headers()
         self.wfile.write(raw)
 
@@ -149,6 +154,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(400, {'error': 'invalid measurement'})
         except (ValueError, UnicodeError):
             return self.reply(400, {'error': 'invalid JSON or content length'})
+        started = time.monotonic()
+        log_control = self.path == '/control' and isinstance(data, dict) and data.get('action') != Handler.last_control_action
+        if log_control:
+            Handler.last_control_action = data.get('action')
+            print(f"Control {data.get('sequence')} {data.get('action')} received", flush=True)
         response_code = 200
         response_error = None
         with control_lock:
@@ -168,6 +178,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 response_code, response_error = 503, 'Motor write failed; check Pi server'
                 drive_status = controller.status()
+        if log_control or (self.path == '/control' and response_error):
+            print(f"Control {data.get('sequence') if isinstance(data, dict) else '?'}: HTTP {response_code}, "
+                  f"{(time.monotonic()-started)*1000:.0f} ms, L={drive_status['left']:g} R={drive_status['right']:g}"
+                  + (f", {response_error}" if response_error else ''), flush=True)
         if response_error:
             return self.reply(response_code, {'error': response_error, 'drive': drive_status})
         if self.path == '/measurements':

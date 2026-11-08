@@ -80,3 +80,14 @@ assert(abs(clockSync.timestamp(at:12.14)!-1_800_000_000.12) < 0.00001)
 clockSync.reset()
 assert(clockSync.timestamp(at:13) == nil)
 print("Pi clock: large offsets, monotonic RTT, stale/high-latency/invalid sample rejection, clock jumps and acknowledgement-domain separation passed")
+
+let movingForward = MotionCommand(client_id:"can",sequence:1,sent_at:100,action:"drive",targetMeters:2,speed:100,leftPercent:100,rightPercent:90)
+let turnLeft = MotionCommand(client_id:"can",sequence:2,sent_at:100,action:"left",targetMeters:2,speed:45)
+let turnRight = MotionCommand(client_id:"can",sequence:3,sent_at:100,action:"right",targetMeters:2,speed:45)
+assert(MotionDispatchPolicy.interrupts(current:movingForward,desired:turnLeft), "Guidance must dispatch Left immediately like manual arrows")
+assert(MotionDispatchPolicy.interrupts(current:turnLeft,desired:turnRight))
+var slowerLeft = turnLeft; slowerLeft.speed = 40
+assert(!MotionDispatchPolicy.interrupts(current:turnLeft,desired:slowerLeft), "Speed-only changes must not repeatedly cancel acknowledgements")
+var correctedForward = movingForward; correctedForward.rightPercent = 85
+assert(!MotionDispatchPolicy.interrupts(current:movingForward,desired:correctedForward))
+print("Shared manual/guided dispatch: immediate direction handoff and serialized speed/trim changes passed")

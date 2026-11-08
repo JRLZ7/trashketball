@@ -122,3 +122,15 @@ Before motion, iOS estimates Pi time using a request's local monotonic send/rece
 Movement stays disabled until synchronization is available. Motor status displays clock-sync state and sample RTT. A dedicated URLSession keeps telemetry requests out of the motor connection pool. Local movement acknowledgement age uses monotonic request elapsed time, **not** subtraction between phone and Pi wall times.
 
 The Pi still rejects genuinely expired/future commands, checks sequence/ownership and stops after 300 ms without accepted renewals. Stop remains accepted without synchronized clocks. Expiry errors now report the signed packet age in milliseconds, making clock mismatches and large delays easier to diagnose. There is no automatic retry/rearming after a rejected movement command.
+
+## Guided direction handoff and acknowledgement diagnostics
+
+Guidance and manual arrows now call the same iOS motion-dispatch helper. Switching `drive`/forward to left/right cancels the obsolete in-flight request and sends the new direction immediately. Speed/trim-only changes keep waiting for the current response, preventing an acknowledgement starvation loop. Start is disabled until a prior Stop request has finished. Acknowledgement deadlines use monotonic uptime and no longer depend on wall-clock adjustment.
+
+The motor URLSession allows two underlying connections so a canceled request cannot occupy the sole connection needed for a direction change or Stop. The Pi supports HTTP/1.1 persistent connections with Content-Length; error replies close the connection, including cases where a request body may not have been consumed.
+
+A new command ID from the current owner retires the previous ID without forcing both motors through a full stop/start cycle. The driver switches off a channel's PWM enable before reversing direction pins. Explicit Stop, inspection, faults and the 300 ms watchdog still stop outputs; retired IDs cannot restart.
+
+While driving, the player receives “Sending left · waiting for Pi” followed by “Pi confirmed left (N ms).” A stale-ack stop reports the pending action and request age. Pi console logs direction changes on receipt and completion with sequence, HTTP result, elapsed handling time and motor percentages; API tokens are never logged. These traces distinguish app/network delay from a Pi-side motor write delay. No movement acknowledgement is fabricated and the 600 ms app deadline, 300 ms Pi watchdog and clock-expiry checks remain in place.
+
+Update the Pi server/controller/**driver** and rebuild both phones. Test guided forward→left→right and compare the console receipt/completion entries with the player status. Mock tests cover immediate dispatch policy, atomic command replacement, PWM-disable-before-reversal ordering, persistent requests, closed-ID replay rejection, duty caps and watchdog stopping. Hardware timing still requires validation.

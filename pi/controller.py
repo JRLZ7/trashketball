@@ -161,7 +161,9 @@ class Controller:
                    [('action', None), ('speed', 100), ('targetMeters', 2), ('leftPercent', None), ('rightPercent', None)]):
                 raise MotionError('Use a new ID to change movement')
         elif self.command:
-            self.stop('New command')
+            # Retire the previous ID without a full GPIO stop/start cycle. The
+            # driver disables a channel before reversing its direction.
+            self.closed_ids.append(self.command['id'])
         self.owner, self.sequence = data['client_id'], data['sequence']
         self.command = dict(id=data['id'], action=action, speed=speed, targetMeters=target,
                             leftPercent=data.get('leftPercent'), rightPercent=data.get('rightPercent'))

@@ -87,6 +87,26 @@ class ReceiverTests(unittest.TestCase):
             receiver.latest['robot'] = (sample, time.monotonic() - 2)
         self.assertIsNone(self.call('/latest')[1]['robot']['intent'])
 
+    def test_control_connection_can_be_reused(self):
+        from http.client import HTTPConnection
+        connection = HTTPConnection('127.0.0.1',self.server.server_port,timeout=2)
+        try:
+            headers = {'Authorization':'Bearer '+receiver.TOKEN,'Content-Type':'application/json'}
+            connection.request('GET','/status',headers=headers)
+            response = connection.getresponse()
+            self.assertEqual(response.status,200)
+            self.assertEqual(response.version,11)
+            response.read()
+            first_socket = connection.sock
+            self.assertIsNotNone(first_socket)
+            connection.request('POST','/measurements',body=json.dumps(self.sample()),headers=headers)
+            response = connection.getresponse()
+            self.assertEqual(response.status,200)
+            response.read()
+            self.assertIs(connection.sock,first_socket)
+        finally:
+            connection.close()
+
     def test_replies_include_current_pi_clock(self):
         before = time.time()
         status, reply = self.call('/status')

@@ -184,5 +184,26 @@ class MotionTests(unittest.TestCase):
         with self.assertRaisesRegex(MotionError, 'age .*ms'):
             controller.control(stale)
 
+    def test_guided_forward_left_right_transition_avoids_full_stop_cycles(self):
+        self.controller.control(self.cmd('drive',leftPercent=100,rightPercent=90))
+        self.drive.outputs.clear()
+        left = self.cmd('left',id='guided-left'); left['speed'] = 45
+        self.controller.control(left)
+        self.assertEqual(self.drive.outputs, [(-45,45)])
+        with self.assertRaises(MotionError):
+            self.controller.control(self.cmd('drive',leftPercent=100,rightPercent=90))
+        self.drive.outputs.clear()
+        self.controller.control(self.cmd('right',id='guided-right'))
+        self.assertEqual(self.drive.outputs, [(25,-25)])
+        self.controller.control(self.cmd('stop',id='final-stop'))
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+
+    def test_identical_output_new_id_does_not_restart_pwm(self):
+        self.controller.control(self.cmd())
+        self.drive.outputs.clear()
+        self.controller.control(self.cmd(id='updated'))
+        self.assertEqual(self.drive.outputs, [])
+        self.assertEqual(self.controller.status()['commandID'], 'updated')
+
 
 if __name__ == '__main__': unittest.main()

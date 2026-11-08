@@ -113,6 +113,8 @@ class _L298NChannel(Motor):
     def forward(self, speed: float = 1) -> None:
         if not 0 <= speed <= 1:
             raise ValueError("forward speed must be between 0 and 1")
+        if self.backward_device.is_active:
+            self.enable_device.off()
         self.backward_device.off()
         self.forward_device.on()
         self.enable_device.value = speed
@@ -120,6 +122,8 @@ class _L298NChannel(Motor):
     def backward(self, speed: float = 1) -> None:
         if not 0 <= speed <= 1:
             raise ValueError("backward speed must be between 0 and 1")
+        if self.forward_device.is_active:
+            self.enable_device.off()
         self.forward_device.off()
         self.backward_device.on()
         self.enable_device.value = speed
