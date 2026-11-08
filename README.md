@@ -76,8 +76,12 @@ See [LiDAR Lab setup, box test and limitations](docs/lidar-lab.md). The phone sh
 The experimental **Lab → Local map** combines LiDAR floor/obstacle cells with a fresh UWB player target in the shared AR session. It runs on the iPhone and supports a standalone two-phone walk test without the Pi. The dashed target line is a bearing, not a planned route. See [the map walk test](docs/lidar-lab.md#two-phone-walk-test-no-pi-required).
 
 
-**Locate → Guided approach** on the can phone now previews direct UWB steering with live LiDAR checks, then can send simple forward/left/right/stop commands to the existing Pi API. It stops on close obstacles, missing floor coverage, arrival, stale tracking or control failures, and requires an explicit restart. Preview works without the Pi; actual movement requires a connected, stopped motor bridge. The older player-side Summon remains labeled **Legacy Summon** because it does not use LiDAR. See [guided approach setup and testing](docs/guided-approach.md).
+**Locate → Guided approach** on the can phone now previews UWB steering and local LiDAR obstacle avoidance, then can send simple forward/left/right/stop commands to the existing Pi API. It compares observed left/right lanes, reports remaining turn angles, and follows short detours. Missing/blocked routes, arrival, stale tracking or control failures stop the run and require an explicit restart. Preview works without the Pi; actual movement requires a connected, stopped motor bridge. The older player-side Summon remains labeled **Legacy Summon** because it does not use LiDAR. See [guided approach setup and testing](docs/guided-approach.md).
 
 Floor detection now measures the actual floor from ARKit floor anchors or broad horizontal depth surfaces instead of assuming the lens is 44 cm high. Lab and guided preview show measured camera height and first-visible-floor distance; an unseen near-floor band still blocks movement.
 
 Measured camera mount height is **25 cm** (floor to middle camera). This now seeds the floor reference automatically, while detected floor surfaces continue to confirm/refine it.
+
+Local avoidance uses a nine-heading clearance fan and short ARKit-tracked detours on the can phone. Unknown side lanes remain unavailable; the feature does not promise a route through unobserved space.
+
+Lab floor processing is isolated from guidance scans. Camera capture age (including processing delay), floor-point percentage and processing time are visible in Lab; floor anchors require supporting depth before changing the ground reference.

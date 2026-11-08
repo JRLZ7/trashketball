@@ -21,14 +21,16 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     @Published private(set) var approachNote = "Preview first; movement starts only when explicitly requested."
     @Published var approachTarget = 1
     private var approachAck = Date.distantPast
+    private var avoidanceNavigator = LocalAvoidanceNavigator()
     var canPreviewApproach: Bool { isRobot && running && sharedARAttached && lidar.supportsDepth && !inspectionActive }
 
     func previewApproach() {
         guard canPreviewApproach else { approachNote = "Connect the can phone with camera assistance enabled; close Lab first."; return }
         guard !approachPreviewing else { return }
+        avoidanceNavigator.reset()
         approachPreviewing = true
         approachNote = "Preview only · motors are not controlled by this preview."
-        lidar.startPreview()
+        lidar.startPreview(avoidance:true)
         tickApproach()
     }
     func endApproachPreview() {
@@ -39,6 +41,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     }
     func beginApproach() {
         guard approachPreviewing, canPreviewApproach, !remoteInspection else { return }
+        avoidanceNavigator.reset()
         tickApproach()
         guard approachDecision.action != "stop" else { approachNote = approachDecision.message; return }
         guard canControlPi, driveIsLive(at: .now), let status = driveStatus, status.enabled,
@@ -64,11 +67,15 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         guard approachPreviewing else { return }
         let now = Date()
         let previous = approachDecision.action
-        approachDecision = GuidedApproach.evaluate(distance: distance, angle: bearing(at: now),
+        approachDecision = avoidanceNavigator.evaluate(distance: distance, angle: bearing(at: now),
             uwbAge: updated.map { now.timeIntervalSince($0) }, connected: connected,
             depthAge: now.timeIntervalSince(lidar.snapshot.timestamp),
             trackingNormal: lidar.snapshot.tracking == "Normal", floorReady: lidar.snapshot.calibrated,
-            corridor: lidar.snapshot.corridor, targetMeters: approachTarget, previousAction: previous)
+            scan: lidar.snapshot.avoidance, fallbackCorridor: lidar.snapshot.corridor,
+            yaw: lidar.snapshot.yawDegrees.map { $0*Float.pi/180 }, position: lidar.snapshot.robotPosition,
+            world: lidar.snapshot.worldID, frameTime: lidar.snapshot.timestamp.timeIntervalSince1970,
+            now: now.timeIntervalSince1970, targetMeters: approachTarget, previousAction: previous, driving: approachActive)
+        lidar.updateAvoidanceTarget(avoidanceNavigator.waypoint)
         guard approachActive else { return }
         guard !inspectionActive, !remoteInspection, running, driveIsLive(at: now), driveStatus?.enabled == true,
               driveStatus?.state != "fault", driveStatus?.state != "inspection", lidar.previewRunning else {
@@ -189,6 +196,8 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         sendControl(force: true)
     }
     func stopMotion() {
+        avoidanceNavigator.reset()
+        lidar.updateAvoidanceTarget(nil)
         if approachActive {
             approachActive = false
             approachNote = "Stopped · press Start to try again."

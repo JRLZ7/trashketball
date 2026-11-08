@@ -14,12 +14,16 @@ struct LidarSnapshot {
     var message = "Start the camera to inspect depth"
     var depthCoverage: Float = 0
     var corridor = CorridorEstimate()
+    var avoidance = AvoidanceScan()
+    var worldID = UUID()
     var dots: [DepthDot] = []
     var polygon: [CGPoint] = []
     var yawDegrees: Float?
     var calibrated = false
     var floorStatus = "Looking for an actual floor surface"
     var measuredCameraHeight: Float?
+    var floorPointFraction: Float?
+    var processingMilliseconds: Double = 0
     var mapCells: [MapCell] = []
     var robotPosition: SIMD2<Float>?
     var robotForward: SIMD2<Float>?
@@ -38,9 +42,12 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
     private var previewRequested = false
     // These fields belong to the serial delegate queue.
     private var sampling = false
+    private var avoidanceEnabled = false
     private var viewport = CGSize(width: 350, height: 420)
     private var lastTimestamp: TimeInterval = -1
     private var floor = FloorReference()
+    private var worldID = UUID()
+    private var avoidanceTarget: SIMD2<Float>?
     private var localMap = LocalDepthMap()
     private var playerTarget: MapPlayerTarget?
     private var minimumFrameTimestamp: TimeInterval = 0
@@ -59,13 +66,13 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         uwbRequested = false
         pauseIfUnused()
     }
-    func startPreview() {
+    func startPreview(avoidance: Bool = false) {
         guard supportsDepth else { error = "LiDAR scene depth is unavailable on this device. Use the can’s Pro iPhone."; return }
         previewRequested = true
         previewRunning = true
         error = nil
         queue.async {
-            self.sampling = true; self.lastTimestamp = -1; self.localMap.reset()
+            self.sampling = true; self.avoidanceEnabled = avoidance; self.lastTimestamp = -1; self.localMap.reset()
             DispatchQueue.main.async { self.snapshot = LidarSnapshot() }
         }
         runIfNeeded()
@@ -73,7 +80,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
     func stopPreview() {
         previewRequested = false
         previewRunning = false
-        queue.async { self.sampling = false }
+        queue.async { self.sampling = false; self.avoidanceEnabled = false }
         pauseIfUnused()
     }
     // Called by the NI delegate on the main queue; capture pose at the UWB update, not later at draw time.
@@ -92,6 +99,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
             self.playerTarget = target
         }
     }
+    func updateAvoidanceTarget(_ target: SIMD2<Float>?) { queue.async { self.avoidanceTarget = target } }
     func clearPlayer() { queue.async { self.playerTarget = nil } }
     func clearMap() {
         queue.async {
@@ -100,7 +108,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
     private func resetGeometry() {
-        floor.reset(); localMap.reset(); playerTarget = nil
+        floor.reset(); localMap.reset(); playerTarget = nil; worldID = UUID(); avoidanceTarget = nil
         minimumFrameTimestamp = ProcessInfo.processInfo.systemUptime
     }
     func updateViewport(_ size: CGSize) {
@@ -153,10 +161,17 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
             if self.uwbRequested || self.previewRequested { self.runIfNeeded() }
         }
     }
-    func session(_ session: ARSession, didUpdate frame: ARFrame) {
+    func session(_ session: ARSession, didUpdate incoming: ARFrame) {
+        // Delegate callbacks can queue behind depth work. Consume the newest frame,
+        // rather than processing each old capture and building a perception backlog.
+        guard sampling else { return }
+        let frame = session.currentFrame ?? incoming
+        let started = ProcessInfo.processInfo.systemUptime
+        guard let capturedAt = DepthFrameTiming.captureDate(frameUptime:frame.timestamp,nowUptime:started,now:.now) else { return }
         guard sampling, frame.timestamp >= minimumFrameTimestamp, frame.timestamp-lastTimestamp >= 0.2 else { return }
         lastTimestamp = frame.timestamp
-        var result = LidarSnapshot(timestamp: .now)
+        var result = LidarSnapshot(timestamp: capturedAt)
+        result.worldID = worldID
         switch frame.camera.trackingState {
         case .normal: result.tracking = "Normal"
         case .notAvailable: result.tracking = "Unavailable"
@@ -171,7 +186,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
             result.robotPosition = SIMD2(origin.x,origin.z)
             let flatForward = SIMD2(forward.x,forward.z)
             if simd_length(flatForward) > 0.1 { result.robotForward = simd_normalize(flatForward) }
-            if let target = playerTarget, target.isFresh(at: result.timestamp.timeIntervalSince1970) {
+            if let target = playerTarget, target.isFresh(at: Date().timeIntervalSince1970) {
                 result.playerTarget = target
             }
         }
@@ -191,6 +206,7 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
             let cx = intrinsics.columns.2.x*sx, cy = intrinsics.columns.2.y*sy
             let display = frame.displayTransform(for: .portrait, viewportSize: viewport)
             var samples: [DepthSample] = []
+            var avoidanceSamples: [DepthSample] = []
             var overlay: [(point: CGPoint, depth: Float, world: SIMD3<Float>)] = []
             var attempted = 0
             func pointAt(_ x: Int, _ y: Int) -> SIMD3<Float>? {
@@ -212,9 +228,11 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
                     if let right = pointAt(x+6,y), let down = pointAt(x,y+6) {
                         horizontal = DepthProjection.horizontal(point,right,down)
                     } else { horizontal = false }
-                    samples.append(DepthSample(world: point, confidence: c, horizontal: horizontal))
+                    let sample = DepthSample(world: point, confidence: c, horizontal: horizontal)
+                    samples.append(sample)
                     // Keep camera overlay lightweight; use the denser cloud for map and detection.
                     if x % 4 == 0 && y % 4 == 0 {
+                        if avoidanceEnabled { avoidanceSamples.append(sample) }
                         let uv = CGPoint(x: CGFloat(x)/CGFloat(width), y: CGFloat(y)/CGFloat(height)).applying(display)
                         if uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 {
                             overlay.append((uv,d,point))
@@ -232,13 +250,14 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
                       simd_distance(SIMD2(origin.x,origin.z),SIMD2(p.x,p.z)) < 4 else { return nil }
                 return FloorCandidate(y:p.y,source:"ARKit detected floor")
             }.min(by: { $0.y < $1.y })
-            let candidate = planeFloor ?? DepthFloorDetection.candidate(samples:samples,origin:origin)
             floor.initializeFromMount(cameraY:origin.y,trackingNormal:trackingNormal,timestamp:frame.timestamp)
+            let candidate = DepthFloorDetection.select(samples:samples,origin:origin,previousY:floor.y,anchor:planeFloor)
             let oldFloor = floor.y
             let floorY = floor.update(candidate:candidate,trackingNormal:trackingNormal,timestamp:frame.timestamp)
             result.floorStatus = floorY == nil ? "Looking for a stable floor · point camera down" : floor.source
             if let floorY {
                 result.measuredCameraHeight = origin.y-floorY
+                result.floorPointFraction = samples.isEmpty ? 0 : Float(samples.filter { abs($0.world.y-floorY) <= 0.06 }.count)/Float(samples.count)
                 // A corrected reference invalidates earlier floor/obstacle labels.
                 if oldFloor == nil || abs(floorY-oldFloor!) > 0.02 { localMap.reset() }
             }
@@ -248,6 +267,9 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
                 localMap.update(samples: samples, floorY: floorY, origin: SIMD2(origin.x,origin.z), now: result.timestamp.timeIntervalSince1970)
                 result.mapCells = Array(localMap.cells.values)
                 result.corridor = DepthGeometry.estimate(samples: samples, origin: origin, forward: forward, floorY: floorY, width: corridorWidth)
+                if avoidanceEnabled {
+                    result.avoidance = AvoidanceGeometry.scan(samples:avoidanceSamples,origin:origin,forward:forward,floorY:floorY,width:corridorWidth,target:avoidanceTarget)
+                }
                 if simd_length(forward) > 0.1 {
                     let heading = simd_normalize(forward), right = simd_cross(heading, SIMD3<Float>(0,1,0))
                     for corner in [SIMD2<Float>(-1,0.15),SIMD2<Float>(-1,3),SIMD2<Float>(1,3),SIMD2<Float>(1,0.15)] {
@@ -261,10 +283,13 @@ final class LidarModel: NSObject, ObservableObject, ARSessionDelegate {
             }
             result.message = "Depth processed on this iPhone · 5 Hz"
         } else { result.message = "Waiting for LiDAR depth and confidence" }
+        result.processingMilliseconds = (ProcessInfo.processInfo.systemUptime-started)*1000
         DispatchQueue.main.async { [result] in
             guard self.previewRequested else { return }
-            // The serial queue bounds depth work to one frame; no frame backlog is created.
-            self.snapshot = result
+            if Date().timeIntervalSince(result.timestamp) >= 0.4 {
+                self.snapshot = LidarSnapshot(timestamp:result.timestamp,message:"Depth processing delayed; readings unavailable",
+                                              floorStatus:"Camera frame delayed; waiting for fresh depth",processingMilliseconds:result.processingMilliseconds)
+            } else { self.snapshot = result }
         }
     }
 }

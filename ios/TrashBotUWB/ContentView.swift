@@ -216,7 +216,7 @@ struct ContentView: View {
     private var guidedApproachCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Guided approach").font(.title3.bold())
-            Text("Uses the Locate bearing and distance directly, with live LiDAR lane checks. Stops when blocked; does not route around obstacles.")
+            Text("Uses Locate bearing and distance with live LiDAR. Compares left/right paths and makes short detours; stops when no observed path is available.")
                 .font(.subheadline).foregroundStyle(.secondary)
             Picker("Stop distance", selection: $model.approachTarget) {
                 ForEach(1...3, id: \.self) { Text("\($0) m").tag($0) }
@@ -234,6 +234,19 @@ struct ContentView: View {
             }
             Text(model.approachDecision.message).font(.headline)
             if model.approachPreviewing {
+                AvoidanceFanView(scan:model.lidar.snapshot.avoidance,selectedDegrees:model.approachDecision.selectedLaneDegrees)
+                    .frame(height:160)
+                HStack(alignment:.top) {
+                    VStack(alignment:.leading) { Text("LEFT").font(.caption.bold()); Text(avoidanceSummary(right:false)).font(.caption) }
+                    Spacer()
+                    VStack(alignment:.trailing) { Text("RIGHT").font(.caption.bold()); Text(avoidanceSummary(right:true)).font(.caption) }
+                }
+                Text("Green: observed open lane · orange: obstacle · gray: unknown · cyan: selected lane")
+                    .font(.caption2).foregroundStyle(.secondary)
+                if let degrees = model.approachDecision.turnDegrees, abs(degrees) > 0.5 {
+                    Text(String(format:"Turn remaining: %.0f° %@",abs(degrees),degrees > 0 ? "right" : "left"))
+                        .font(.subheadline.monospacedDigit())
+                }
                 Text("Floor: \(model.lidar.snapshot.floorStatus)").font(.caption).foregroundStyle(.secondary)
                 if let height = model.lidar.snapshot.measuredCameraHeight {
                     Text(String(format: "Measured camera height: %.0f cm", height*100)).font(.caption).foregroundStyle(.secondary)
@@ -251,9 +264,18 @@ struct ContentView: View {
                 Button("Stop", role: .destructive) { model.stopMotion() }
                     .buttonStyle(.bordered).disabled(!model.running)
             }
-            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Driving uses fixed 50% forward / 45% turn commands and the Pi's existing PWM cap. Keep space around the can for turns.")
+            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Driving uses 50% forward, 45% detour/turn commands and the Pi's existing PWM cap. Side/rear blind spots remain; keep space around the can for pivots.")
                 .font(.caption).foregroundStyle(.secondary)
         }.card()
+    }
+
+    private func avoidanceSummary(right: Bool) -> String {
+        let lanes = model.lidar.snapshot.avoidance.lanes.filter { right ? $0.angle > 0 : $0.angle < 0 }
+        if let best = lanes.filter(\.isOpen).max(by: { $0.corridor.observedFreeDistance < $1.corridor.observedFreeDistance }) {
+            return String(format:"%.0f° · %.2f m observed",abs(best.angle)*180/Float.pi,best.corridor.observedFreeDistance)
+        }
+        if let nearest = lanes.compactMap({ $0.corridor.nearestObstacle }).min() { return String(format:"Obstacle at %.2f m",nearest) }
+        return "Not enough observed floor"
     }
 
     private var setup: some View {
@@ -363,4 +385,37 @@ private struct ActionStyle: ButtonStyle {
 }
 private extension View {
     func card() -> some View { padding(20).background(panel, in: RoundedRectangle(cornerRadius: 24)) }
+}
+
+
+private struct AvoidanceFanView: View {
+    let scan: AvoidanceScan
+    let selectedDegrees: Float?
+    var body: some View {
+        Canvas { context, size in
+            let origin = CGPoint(x:size.width/2,y:size.height-18)
+            let scale = min(size.width/2.8,(size.height-30)/1.4)
+            func point(angle: Float, distance: Float) -> CGPoint {
+                CGPoint(x:origin.x+CGFloat(sin(angle)*distance)*scale,y:origin.y-CGFloat(cos(angle)*distance)*scale)
+            }
+            for lane in scan.lanes {
+                let degrees = lane.angle*180/Float.pi
+                let selected = selectedDegrees.map { abs($0-degrees) < 1 } ?? false
+                let blocked = lane.corridor.nearestObstacle.map { $0 < 0.9 } ?? false
+                let color: Color = selected ? .cyan : lane.isOpen ? .green : blocked ? .orange : .gray.opacity(0.5)
+                var path = Path(); path.move(to:origin); path.addLine(to:point(angle:lane.angle,distance:1.25))
+                context.stroke(path,with:.color(color),style:StrokeStyle(lineWidth:selected ? 4 : 2,dash:lane.isOpen || blocked ? [] : [3,4]))
+                if let obstacle = lane.corridor.nearestObstacle, obstacle < 1.4 {
+                    let p = point(angle:lane.angle,distance:obstacle)
+                    context.fill(Path(ellipseIn:CGRect(x:p.x-4,y:p.y-4,width:8,height:8)),with:.color(.orange))
+                }
+            }
+            context.fill(Path(ellipseIn:CGRect(x:origin.x-6,y:origin.y-6,width:12,height:12)),with:.color(.white))
+            context.draw(Text("LEFT").font(.caption2).foregroundColor(.secondary),at:CGPoint(x:24,y:size.height-12))
+            context.draw(Text("RIGHT").font(.caption2).foregroundColor(.secondary),at:CGPoint(x:size.width-26,y:size.height-12))
+            context.draw(Text("0°").font(.caption2).foregroundColor(.secondary),at:CGPoint(x:origin.x,y:10))
+        }
+        .background(Color.black.opacity(0.35),in:RoundedRectangle(cornerRadius:12))
+        .accessibilityLabel("Observed left and right avoidance paths")
+    }
 }

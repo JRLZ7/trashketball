@@ -115,7 +115,7 @@ assert(guidance(corridor: CorridorEstimate(observedFreeDistance: .nan)).action =
 print("Guided approach: direct bearing, speed caps, hysteresis, arrival, stale/invalid sensors and obstruction checks passed")
 
 // Reproduce real capture geometry, including different lens heights and downward tilt.
-func syntheticFloor(height: Float, pitch: Float, floorY: Float = -0.25) -> (samples:[DepthSample], camera:simd_float4x4) {
+func syntheticFloor(height: Float, pitch: Float, floorY: Float = -0.25, pixelStride: Int = 2) -> (samples:[DepthSample], camera:simd_float4x4) {
     var pose = matrix_identity_float4x4
     let c = cos(pitch), s = sin(pitch)
     pose.columns.1 = SIMD4(0,c,-s,0)
@@ -129,8 +129,8 @@ func syntheticFloor(height: Float, pitch: Float, floorY: Float = -0.25) -> (samp
         return DepthProjection.worldPoint(x:Float(x),y:Float(y),depth:depth,fx:120,fy:120,cx:128,cy:96,camera:pose)
     }
     var points: [DepthSample] = []
-    for y in stride(from:0,to:186,by:2) {
-        for x in stride(from:0,to:250,by:2) {
+    for y in stride(from:0,to:186,by:pixelStride) {
+        for x in stride(from:0,to:250,by:pixelStride) {
             guard let a = point(x,y), let b = point(x+6,y), let c = point(x,y+6) else { continue }
             assert(abs(a.y-floorY) < 0.001, "Depth unprojection must keep a tilted floor horizontal")
             points.append(DepthSample(world:a,confidence:2,horizontal:DepthProjection.horizontal(a,b,c)))
@@ -194,3 +194,185 @@ let lowCandidate = DepthFloorDetection.candidate(samples:lowMountedScene.samples
 let lowEstimate = DepthGeometry.estimate(samples:lowMountedScene.samples,origin:lowOrigin,forward:SIMD3(0,0,-1),floorY:lowCandidate.y,width:0.46)
 assert(lowEstimate.nearestObstacle == nil && lowEstimate.observedFreeDistance >= 0.65)
 print("25 cm mount: initialization, fixed world floor, expiry, confirmation, reset and downward-view floor checks passed")
+
+var arena: [DepthSample] = []
+for x in stride(from:Float(-2),through:2,by:0.05) {
+    for z in stride(from:Float(-2),through:0.5,by:0.05) {
+        arena.append(DepthSample(world:SIMD3(x,0,z),confidence:2))
+    }
+}
+let arenaOrigin = SIMD3<Float>(0,0.25,0)
+let centerBox = (-4...4).flatMap { x in (0..<4).map { j in
+    DepthSample(world:SIMD3(Float(x)*0.025,0.2,-0.6-Float(j)*0.005),confidence:2)
+} }
+let openScan = AvoidanceGeometry.scan(samples:arena,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+let boxScan = AvoidanceGeometry.scan(samples:arena+centerBox,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+assert(openScan.lanes.count == 9 && openScan.lanes.allSatisfy(\.isOpen))
+assert(boxScan.nearestLane(to:0)?.isOpen == false)
+assert(boxScan.lanes.contains { $0.angle < 0 && $0.isOpen } && boxScan.lanes.contains { $0.angle > 0 && $0.isOpen })
+let navWorld = UUID()
+func navigation(_ navigator: inout LocalAvoidanceNavigator, scan: AvoidanceScan, angle:Float? = 0,
+                yaw:Float = 0, position:SIMD2<Float> = .zero, time:Double = 0, age:Double = 0.01,
+                depthAge:Double = 0.01, world:UUID = navWorld, driving:Bool = false,
+                previous:String? = nil, distance:Float? = 3, connected:Bool = true, normal:Bool = true, ready:Bool = true) -> ApproachDecision {
+    navigator.evaluate(distance:distance,angle:angle,uwbAge:age,connected:connected,depthAge:depthAge,
+        trackingNormal:normal,floorReady:ready,scan:scan,fallbackCorridor:CorridorEstimate(),
+        yaw:yaw,position:position,world:world,frameTime:time,now:time,targetMeters:1,
+        previousAction:previous,driving:driving)
+}
+var navigator = LocalAvoidanceNavigator()
+assert(navigation(&navigator,scan:openScan).action == "forward")
+navigator.reset()
+let detourChoice = navigation(&navigator,scan:boxScan)
+assert(detourChoice.avoiding && detourChoice.action == "left" && detourChoice.turnDegrees! < 0)
+assert(abs(detourChoice.turnDegrees!) >= 30, "Report a useful turn angle, not just blocked")
+let chosenYaw = detourChoice.turnDegrees!*Float.pi/180
+let chosenForward = SIMD3<Float>(sin(chosenYaw),0,-cos(chosenYaw))
+let turnedScan = AvoidanceGeometry.scan(samples:arena+centerBox,origin:arenaOrigin,forward:chosenForward,floorY:0)
+let afterTurn = navigation(&navigator,scan:turnedScan,angle:-chosenYaw,yaw:chosenYaw,time:0.2,previous:"left")
+assert(afterTurn.action == "forward" && afterTurn.avoiding && afterTurn.turnDegrees == 0, "Use measured yaw to complete the requested turn")
+assert(navigation(&navigator,scan:turnedScan,angle:-chosenYaw,yaw:chosenYaw,time:8.1,driving:true).action == "stop", "Bound an active detour's duration")
+navigator.reset()
+var onlyRight = boxScan
+onlyRight.lanes = onlyRight.lanes.map { lane in
+    lane.angle < 0 ? AvoidanceLane(angle:lane.angle,corridor:CorridorEstimate()) : lane
+}
+assert(navigation(&navigator,scan:onlyRight).action == "right", "Choose the observed open side")
+navigator.reset()
+var onlyLeft = boxScan
+onlyLeft.lanes = onlyLeft.lanes.map { lane in
+    lane.angle > 0 ? AvoidanceLane(angle:lane.angle,corridor:CorridorEstimate()) : lane
+}
+assert(navigation(&navigator,scan:onlyLeft).action == "left")
+assert(navigation(&navigator,scan:onlyRight,time:0.2).action == "stop", "Do not flip sides if a committed detour becomes unobserved")
+navigator.reset()
+let unknownScan = AvoidanceGeometry.scan(samples:[],origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+assert(navigation(&navigator,scan:unknownScan).action == "stop", "Unknown sides cannot be chosen")
+navigator.reset()
+var tooClose = openScan; tooClose.nearestRadialObstacle = 0.3
+assert(navigation(&navigator,scan:tooClose).message.contains("too close to pivot"))
+navigator.reset()
+assert(navigation(&navigator,scan:openScan,age:0.3).action == "stop")
+assert(navigation(&navigator,scan:openScan,depthAge:0.5).action == "stop")
+assert(navigation(&navigator,scan:openScan,distance:1.1).message.hasPrefix("Arrived"))
+navigator.reset()
+_ = navigation(&navigator,scan:boxScan)
+assert(navigation(&navigator,scan:boxScan,time:0.2,world:UUID()).message.contains("AR session changed"))
+navigator.reset()
+_ = navigation(&navigator,scan:boxScan)
+let blockedWhileTurning = navigation(&navigator,scan:unknownScan,time:0.2)
+assert(blockedWhileTurning.action == "stop")
+print("Local avoidance: fan geometry, inflated lanes, side choice, measured turn completion, unknown/blocked paths, freshness, arrival, timeout and AR resets passed")
+
+// Rejoin only after progress and three distinct clear depth frames, not three timer ticks.
+navigator.reset()
+let rejoinChoice = navigation(&navigator,scan:boxScan)
+let rejoinYaw = rejoinChoice.turnDegrees!*Float.pi/180
+let progress = SIMD2<Float>(sin(rejoinYaw),-cos(rejoinYaw))*0.36
+for time in [0.2,0.2,0.4] {
+    let step = navigation(&navigator,scan:openScan,angle:-rejoinYaw,yaw:rejoinYaw,position:progress,time:time)
+    assert(step.avoiding, "Repeated timer tick cannot count as another clear sensor frame")
+}
+let rejoined = navigation(&navigator,scan:openScan,angle:-rejoinYaw,yaw:rejoinYaw,position:progress,time:0.6)
+assert(!rejoined.avoiding && rejoined.action != "stop", "Rejoin player after consistent clear observations")
+navigator.reset()
+let radialWall = stride(from:Float(-80),through:80,by:2).flatMap { deg in (0..<4).map { n in
+    let a = deg*Float.pi/180
+    return DepthSample(world:SIMD3(sin(a)*0.6,0.2,-cos(a)*0.6-Float(n)*0.001),confidence:2)
+} }
+let enclosed = AvoidanceGeometry.scan(samples:arena+radialWall,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+assert(enclosed.lanes.allSatisfy { !$0.isOpen })
+assert(navigation(&navigator,scan:enclosed).action == "stop", "No escape lane must stop")
+print("Detour rejoin frame counting and enclosed-path checks passed")
+
+// End-to-end kinematic exercise: turn, pass a box, rejoin, and stop at the player.
+var simulatedFloor: [DepthSample] = []
+for x in stride(from:Float(-2),through:2,by:0.075) {
+    for z in stride(from:Float(-4),through:0.5,by:0.075) {
+        simulatedFloor.append(DepthSample(world:SIMD3(x,0,z),confidence:2))
+    }
+}
+var simulation = LocalAvoidanceNavigator()
+var simPosition = SIMD2<Float>.zero, simYaw: Float = 0
+var simScan = AvoidanceScan(), simPose = simPosition, simFrameYaw = simYaw
+var simFrameTime: Double = 0
+var simPrevious: String?
+var arrived = false, sawDetour = false
+for step in 0..<500 {
+    let time = Double(step)*0.1
+    if step % 2 == 0 {
+        simPose = simPosition; simFrameYaw = simYaw; simFrameTime = time
+        simScan = AvoidanceGeometry.scan(samples:simulatedFloor+centerBox,origin:SIMD3(simPosition.x,0.25,simPosition.y),
+            forward:SIMD3(sin(simYaw),0,-cos(simYaw)),floorY:0,target:simulation.waypoint)
+    }
+    let delta = SIMD2<Float>(0,-3)-simPosition
+    let f = SIMD2<Float>(sin(simYaw),-cos(simYaw)), r = SIMD2<Float>(cos(simYaw),sin(simYaw))
+    let bearing = atan2(simd_dot(delta,r),simd_dot(delta,f))
+    let decision = simulation.evaluate(distance:simd_length(delta),angle:bearing,uwbAge:0.01,connected:true,
+        depthAge:time-simFrameTime+0.01,trackingNormal:true,floorReady:true,scan:simScan,fallbackCorridor:CorridorEstimate(),
+        yaw:simFrameYaw,position:simPose,world:navWorld,frameTime:simFrameTime,now:time,targetMeters:1,
+        previousAction:simPrevious,driving:true)
+    if decision.message.hasPrefix("Arrived") { arrived = true; break }
+    assert(decision.action != "stop", "Unexpected simulated stop: \(decision.message), step \(step)")
+    sawDetour = sawDetour || decision.avoiding
+    if decision.action == "left" { simYaw -= 0.09 }
+    if decision.action == "right" { simYaw += 0.09 }
+    if decision.action == "forward" { simPosition += SIMD2(sin(simYaw),-cos(simYaw))*0.02 }
+    for point in centerBox {
+        assert(simd_distance(simPosition,SIMD2(point.world.x,point.world.z)) > 0.23, "Simulated footprint hits obstacle")
+    }
+    simPrevious = decision.action
+}
+assert(arrived && sawDetour, "Must avoid box and reach the selected player distance")
+print("Kinematic box-avoidance-to-player simulation passed (synthetic geometry, not hardware validation)")
+
+
+navigator.reset()
+let overshootChoice = navigation(&navigator,scan:boxScan)
+let overshootYaw = overshootChoice.turnDegrees!*Float.pi/180-0.12
+assert(navigation(&navigator,scan:openScan,angle:-overshootYaw,yaw:overshootYaw,time:0.2,previous:"left").action == "forward", "Small overshoot must not cause left/right oscillation when forward is observed clear")
+navigator.reset()
+let smallTurnChoice = navigation(&navigator,scan:boxScan)
+let smallTurnYaw = smallTurnChoice.turnDegrees!*Float.pi/180-0.08
+let blockedStraight = AvoidanceScan(lanes:[AvoidanceLane(angle:0,corridor:CorridorEstimate(nearestObstacle:0.5)),AvoidanceLane(angle:0.08,corridor:CorridorEstimate(observedFreeDistance:1.4))])
+assert(navigation(&navigator,scan:blockedStraight,angle:-smallTurnYaw,yaw:smallTurnYaw,time:0.2,previous:"right").action == "right", "Finish a small turn rather than driving along a still-blocked straight lane")
+navigator.reset()
+assert(navigation(&navigator,scan:openScan,angle:nil).action == "stop")
+assert(navigation(&navigator,scan:openScan,distance:nil).action == "stop")
+assert(navigation(&navigator,scan:openScan,angle:.nan).action == "stop")
+assert(navigation(&navigator,scan:openScan,connected:false).action == "stop")
+assert(navigation(&navigator,scan:openScan,normal:false).action == "stop")
+assert(navigation(&navigator,scan:openScan,ready:false).action == "stop")
+print("Overshoot, blocked-forward turn completion and missing-input regressions passed")
+
+
+let mountedOrigin = SIMD3<Float>(0,0.25,0)
+let falseLowerAnchor = FloorCandidate(y:-0.8,source:"unrelated floor anchor")
+let validatedFloor = DepthFloorDetection.select(samples:horizontalSurface,origin:mountedOrigin,previousY:0,anchor:falseLowerAnchor)!
+assert(abs(validatedFloor.y) < 0.001, "An unrelated AR plane must not turn real floor into red/orange obstacles")
+assert(DepthFloorDetection.select(samples:wall,origin:mountedOrigin,previousY:0,anchor:FloorCandidate(y:0,source:"anchor")) == nil, "Plane anchors alone cannot confirm unobserved floor")
+let recoveredFloor = DepthFloorDetection.select(samples:horizontalSurface,origin:mountedOrigin,previousY:-0.8,anchor:FloorCandidate(y:0,source:"floor"))!
+assert(abs(recoveredFloor.y) < 0.001, "Bad prior can recover when supported by real depth")
+var extraLevel = horizontalSurface
+for _ in 0..<4 { extraLevel += horizontalSurface.map { DepthSample(world:$0.world-SIMD3(0,0.6,0),confidence:2,horizontal:true) } }
+assert(abs(DepthFloorDetection.select(samples:extraLevel,origin:mountedOrigin,previousY:0,anchor:falseLowerAnchor)!.y) < 0.001, "Visible lower surfaces cannot replace an already-supported ground reference")
+let capture = DepthFrameTiming.captureDate(frameUptime:50,nowUptime:50.12,now:Date(timeIntervalSince1970:1000))!
+assert(abs(capture.timeIntervalSince1970-999.88) < 0.001)
+assert(DepthFrameTiming.captureDate(frameUptime:50,nowUptime:50.2,now:.now) == nil)
+assert(DepthFrameTiming.captureDate(frameUptime:51,nowUptime:50,now:.now) == nil)
+assert(Date(timeIntervalSince1970:1000.35).timeIntervalSince(capture) > 0.4, "Queue/processing delay must count toward stale-data gating")
+let sparseCloud = syntheticFloor(height:0.25,pitch:0.6,pixelStride:4)
+let sparseScan = AvoidanceGeometry.scan(samples:sparseCloud.samples,origin:SIMD3(0,0,0),forward:SIMD3(0,0,-1),floorY:-0.25)
+assert(sparseScan.nearestLane(to:0)?.isOpen == true, "Lower-cost guidance sampling must retain visible clear-floor evidence")
+print("Floor regression: supported reference preference, bad-anchor rejection, recovery, capture-age timing and lower-cost avoidance sampling passed")
+
+
+var staleWrongFloor = FloorReference()
+for time in [0.0,0.2,0.4] {
+    _ = staleWrongFloor.update(candidate:FloorCandidate(y:-0.8,source:"old bad plane"),trackingNormal:true,timestamp:time)
+}
+let actualGround = FloorCandidate(y:0,source:"depth-confirmed actual floor")
+assert(staleWrongFloor.update(candidate:actualGround,trackingNormal:true,timestamp:0.6) == -0.8, "Keep the raised-surface guard while old reference is reliable")
+for time in [1.8,2.0,2.2] { _ = staleWrongFloor.update(candidate:actualGround,trackingNormal:true,timestamp:time) }
+assert(abs(staleWrongFloor.y!) < 0.001, "An expired wrong plane must not permanently reject the actual higher floor")
+print("Expired wrong floor can recover automatically without UWB recalibration")
