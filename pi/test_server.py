@@ -131,6 +131,23 @@ class ReceiverTests(unittest.TestCase):
         finally:
             receiver.scorer = previous
 
+    def test_authenticated_inspection_endpoint(self):
+        from controller import Controller
+        previous = receiver.controller
+        receiver.controller = Controller()
+        try:
+            self.assertEqual(self.call('/inspection', {'enabled':True}, token=False)[0], 401)
+            status, reply = self.call('/inspection', {'enabled':True})
+            self.assertEqual(status,200)
+            self.assertEqual(reply['drive']['state'],'inspection')
+            self.assertTrue(receiver.controller.inspection)
+            self.assertEqual(self.call('/inspection', {'enabled':'yes'})[0],409)
+            self.assertTrue(receiver.controller.inspection)
+            self.assertEqual(self.call('/inspection', {'enabled':False})[0],200)
+            self.assertFalse(receiver.controller.inspection)
+        finally:
+            receiver.controller = previous
+
     def test_invalid_payloads(self):
         for patch in ({'distance_m': -1}, {'distance_m': float('nan')},
                       {'direction': {'x': 0}}, {'age_s': 2}, {'fresh': False}, {'role': 'motor'}):

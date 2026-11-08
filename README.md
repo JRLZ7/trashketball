@@ -66,3 +66,9 @@ swiftc -module-cache-path /tmp/trashketball-swift-cache ios/TrashBotUWB/GameStat
 Controller/HTTP tests use injected fake motors, including watchdog, tracking loss, arrival, stale/replayed commands and authenticated motor calls. The actual teammate `Drive` class has also been checked with gpiozero mock PWM pins. iOS builds are checked unsigned; radio performance, mounting calibration, motor force and stopping distance require real hardware tests.
 
 [Pi HTTP contract](docs/pi-interface.md) · [Teammate motor-driver guide](Firmware/PI/README.md)
+
+## Experimental LiDAR Lab
+
+On the can phone, open **Lab** for a camera/depth overlay, AR tracking, automatic floor initialization using the provisional 30 cm width / 44 cm camera-height assumptions, and a forward-corridor obstacle estimate. Processing runs on the iPhone. The Pi receives an inspection hold that stops and blocks motors while the screen is open; restart the updated Pi server before testing. Without a confirmed hold, disconnect motor power before using the standalone preview option. This milestone does not steer or plan a path.
+
+See [LiDAR Lab setup, box test and limitations](docs/lidar-lab.md). The phone shares one ARKit session between depth, preview and UWB camera assistance. Physical-device testing is required for sensor accuracy and UWB coexistence; Simulator only verifies unavailable states and navigation.

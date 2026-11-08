@@ -23,6 +23,7 @@ class Controller:
         self.message = 'Ready' if drive else 'Motor control disabled in pi/server.py'
         self.left = self.right = 0
         self.pose = None
+        self.inspection = False
         self.owner = None
         self.sequence = -1
         self.command = None
@@ -91,6 +92,12 @@ class Controller:
         elapsed = self.clock() - p['received']
         return elapsed < self.WATCHDOG and p['age'] + elapsed < self.MAX_SAMPLE_AGE
 
+    def set_inspection(self, enabled):
+        self.inspection = enabled
+        self.stop('LiDAR Lab active · motors held stopped' if enabled else 'Lab closed · issue a new movement command',
+                  'inspection' if enabled else 'stopped')
+        return self.status()
+
     def control(self, data):
         if not isinstance(data, dict):
             raise MotionError('Expected command object')
@@ -116,6 +123,8 @@ class Controller:
             self.closed_ids.append(data['id'])
             self.stop('Stopped from app')
             return self.status()
+        if self.inspection:
+            raise MotionError('LiDAR Lab is active on the can phone; close it before driving')
         if same_owner and data['sequence'] <= self.sequence:
             raise MotionError('Out-of-order command')
         if not self.drive:

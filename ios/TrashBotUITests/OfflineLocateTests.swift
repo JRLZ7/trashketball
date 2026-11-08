@@ -17,6 +17,18 @@ final class OfflineLocateTests: XCTestCase {
         }
     }
 
+    func testLidarLabHasUnavailableStateWithoutHardware() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-role", "Robot"]
+        app.launch()
+        app.tabBars.buttons["Lab"].tap()
+        XCTAssertTrue(app.staticTexts["LiDAR Lab"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["LiDAR unavailable"].exists)
+        XCTAssertFalse(app.buttons["Start LiDAR"].isEnabled)
+        app.tabBars.buttons["Connect"].tap()
+        XCTAssertTrue(app.navigationBars["Get connected"].waitForExistence(timeout: 5))
+    }
+
     func testPlayerLocateOpensWithoutConnections() {
         let app = XCUIApplication()
         app.launchArguments = ["-role", "User"]

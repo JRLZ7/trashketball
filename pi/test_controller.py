@@ -105,6 +105,18 @@ class MotionTests(unittest.TestCase):
         self.controller.control(command)
         self.assertEqual(self.drive.outputs[-1], (100,100))
 
+    def test_inspection_hold_stops_and_blocks_all_motion(self):
+        self.controller.control(self.cmd())
+        self.controller.set_inspection(True)
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+        with self.assertRaises(MotionError): self.controller.control(self.cmd(id='new'))
+        self.controller.control(self.cmd('stop', id='stop'))
+        with self.assertRaises(MotionError): self.controller.control(self.cmd(id='new2'))
+        self.controller.set_inspection(False)
+        with self.assertRaises(MotionError): self.controller.control(self.cmd())
+        self.controller.control(self.cmd(id='after-lab'))
+        self.assertEqual(self.drive.outputs[-1], (25,25))
+
     def test_fault_attempts_stop(self):
         def fail(*args): raise OSError('GPIO fault')
         self.drive.set_motor_control=fail

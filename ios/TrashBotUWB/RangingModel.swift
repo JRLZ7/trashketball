@@ -4,6 +4,65 @@ import MultipeerConnectivity
 
 // Keep all NI/MPC state on the main queue. Delegate callbacks hop to it below.
 final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
+    let lidar = LidarModel()
+    @Published private(set) var inspectionActive = false
+    @Published private(set) var inspectionConfirmed = false
+    @Published private(set) var inspectionMessage = "Motor hold not requested"
+    @Published private(set) var remoteInspection = false
+    private var inspectionTimer: Timer?
+    private var inspectionRequest: URLSessionDataTask?
+    private var inspectionURL: URL?
+    private var inspectionGeneration = UUID()
+    private var sharedARAttached = false
+
+    func enterInspection(receiver: String) {
+        stopMotion()
+        inspectionActive = true
+        inspectionConfirmed = false
+        inspectionMessage = "Confirming motor hold…"
+        if connected { sendMessage(kind: "inspection", value: true) }
+        let address = receiver.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: address), ["http", "https"].contains(url.scheme ?? ""), url.host != nil {
+            inspectionURL = url.appendingPathComponent("inspection")
+        } else { inspectionURL = nil }
+        inspectionTimer?.invalidate()
+        pushInspection(true)
+        inspectionTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.pushInspection(true) }
+    }
+    func exitInspection() {
+        guard inspectionActive else { return }
+        lidar.stopPreview()
+        inspectionActive = false
+        inspectionTimer?.invalidate(); inspectionTimer = nil
+        if connected { sendMessage(kind: "inspection", value: false) }
+        pushInspection(false, force: true)
+    }
+    private func pushInspection(_ enabled: Bool, force: Bool = false) {
+        guard let inspectionURL else {
+            inspectionMessage = "Pi hold unconfirmed · disconnect motor power for this test"
+            return
+        }
+        guard force || inspectionRequest == nil else { return }
+        if force { inspectionRequest?.cancel(); inspectionRequest = nil }
+        inspectionGeneration = UUID()
+        let current = inspectionGeneration
+        var req = URLRequest(url: inspectionURL)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer 12345", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["enabled": enabled])
+        inspectionRequest = http.dataTask(with: req) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self, self.inspectionGeneration == current else { return }
+                self.inspectionRequest = nil
+                let reply = data.flatMap { try? JSONDecoder().decode(PiReply.self, from: $0) }
+                let accepted = error == nil && (response as? HTTPURLResponse)?.statusCode == 200 && reply?.drive?.state == (enabled ? "inspection" : "stopped")
+                self.inspectionConfirmed = enabled && accepted
+                self.inspectionMessage = accepted ? (enabled ? "Pi confirmed · motors held stopped" : "Motor hold released") : "Pi hold unconfirmed · disconnect motor power for this test"
+            }
+        }
+        inspectionRequest?.resume()
+    }
     @Published var running = false
     @Published var connected = false
     @Published var remoteRound: RoundState?
@@ -43,6 +102,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         beginMotion(action: action, targetMeters: targetMeters, speed: speed)
     }
     func beginMotion(action: String, targetMeters: Int = 2, speed: Int = 80) {
+        guard !inspectionActive, !remoteInspection else { driveError = "Close LiDAR Lab on the can phone before driving."; return }
         guard !isRobot, running, endpoint != nil else { driveError = "Enter the Pi URL and token, then connect."; return }
         guard driveIsLive(at: .now), driveStatus?.enabled == true else { driveError = "Pi motor bridge is not ready."; return }
         if action == "summon" && (!connected || driveStatus?.summonReady != true) {
@@ -207,6 +267,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         ranging.delegate = self
         ranging.delegateQueue = .main
         ni = ranging
+        sharedARAttached = false
         let localPeer = MCPeerID(displayName: "\(role)-\(UUID().uuidString.prefix(6))")
         let session = MCSession(peer: localPeer, securityIdentity: nil, encryptionPreference: .required)
         session.delegate = self
@@ -240,6 +301,9 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         browser?.stopBrowsingForPeers(); browser = nil
         mpc?.delegate = nil; mpc?.disconnect(); mpc = nil
         ni?.delegate = nil; ni?.invalidate(); ni = nil
+        sharedARAttached = false
+        lidar.releaseUWB()
+        remoteInspection = false
         peerToken = nil
         clear()
         connected = false; remoteRound = nil
@@ -264,6 +328,11 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         config.isCameraAssistanceEnabled = cameraAssistance && NISession.deviceCapabilities.supportsCameraAssistance
         config.isExtendedDistanceMeasurementEnabled = NISession.deviceCapabilities.supportsExtendedDistanceMeasurement && token.deviceCapabilities.supportsExtendedDistanceMeasurement
         convergence = config.isCameraAssistanceEnabled ? "Waiting for camera-assisted calibration" : "Camera assistance off"
+        if isRobot && config.isCameraAssistanceEnabled && !sharedARAttached {
+            lidar.acquireForUWB()
+            ni.setARSession(lidar.session)
+            sharedARAttached = true
+        }
         ni.run(config)
         status = "Ranging · keep phones oriented toward each other"
     }
@@ -351,6 +420,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                 self.connected = true
                 self.advertiser?.stopAdvertisingPeer(); self.browser?.stopBrowsingForPeers()
                 self.peerName = peerID.displayName; self.sendToken()
+                if self.inspectionActive { self.sendMessage(kind: "inspection", value: true) }
                 if !self.isRobot, let round = self.localRound { self.publishRound(round) }
             }
             else if state == .notConnected { self.stop(); self.status = "Disconnected. Start both phones again." }
@@ -368,6 +438,9 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                     self.peerToken = token; self.range()
                 case "round" where self.isRobot:
                     self.remoteRound = try JSONDecoder().decode(RoundState.self, from: message.payload)
+                case "inspection" where !self.isRobot:
+                    self.remoteInspection = try JSONDecoder().decode(Bool.self, from: message.payload)
+                    if self.remoteInspection { self.stopMotion() }
                 case "drive" where !self.isRobot:
                     self.driveStatus = try JSONDecoder().decode(DriveStatus.self, from: message.payload)
                     self.driveUpdated = .now

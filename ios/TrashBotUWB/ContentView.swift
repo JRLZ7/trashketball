@@ -24,6 +24,13 @@ struct ContentView: View {
         TabView(selection: $selectedTab) {
             NavigationStack { play }.tabItem { Label("Play", systemImage: "basketball.fill") }.tag(0)
             NavigationStack { tracking }.tabItem { Label("Locate", systemImage: "location.north.circle.fill") }.tag(1)
+            NavigationStack {
+                if isRobot {
+                    LidarDebugView(model: model, receiver: receiver)
+                } else {
+                    ContentUnavailableView("Use the can’s phone", systemImage: "camera.viewfinder", description: Text("Choose On the can in Connect to inspect LiDAR on the mounted phone."))
+                }
+            }.tabItem { Label("Lab", systemImage: "camera.viewfinder") }.tag(3)
             NavigationStack { setup }.tabItem { Label("Connect", systemImage: "antenna.radiowaves.left.and.right") }.tag(2)
         }
         .tint(orange)
@@ -32,7 +39,7 @@ struct ContentView: View {
         .onChange(of: game.round) { _, value in if !isRobot { model.publishRound(value) } }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { model.stopMotion() }
-            if phase == .background { model.stop() }
+            if phase == .background { model.exitInspection(); model.stop() }
         }
     }
 
@@ -150,7 +157,7 @@ struct ContentView: View {
                 }
                 TimelineView(.periodic(from: .now, by: 0.2)) { context in
                     let live = model.driveIsLive(at: context.date)
-                    let ready = live && model.driveStatus?.enabled == true && model.canControlPi
+                    let ready = live && model.driveStatus?.enabled == true && model.canControlPi && !model.remoteInspection && !model.inspectionActive && model.driveStatus?.state != "inspection" && model.driveStatus?.state != "fault"
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
                             Text(isRobot ? "Motor status" : "Move the basket").font(.title3.bold())

@@ -6,21 +6,25 @@
 "objectVersion" = "56";
 "archiveVersion" = "1";
 "objects" = {
-"A00000000000000000000006" = {
+"D00000000000000000000008" = {
 "isa" = "XCBuildConfiguration";
+"name" = "Release";
 "buildSettings" = {
-"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+"GENERATE_INFOPLIST_FILE" = "YES";
 "IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
-"CLANG_ENABLE_MODULES" = "YES";
-"SDKROOT" = "iphoneos";
+"PRODUCT_BUNDLE_IDENTIFIER" = "org.trashketball.UITests";
+"SWIFT_VERSION" = "5.0";
+"CODE_SIGN_STYLE" = "Automatic";
+"TEST_TARGET_NAME" = "TrashBotUWB";
+"TARGETED_DEVICE_FAMILY" = "1";
+"PRODUCT_NAME" = "$(TARGET_NAME)";
 };
-"name" = "Debug";
 };
-"A00000000000000000000010" = {
-"isa" = "XCConfigurationList";
-"defaultConfigurationIsVisible" = "0";
-"defaultConfigurationName" = "Release";
-"buildConfigurations" = ("A00000000000000000000016","A00000000000000000000017");
+"D00000000000000000000002" = {
+"path" = "OfflineLocateTests.swift";
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "sourcecode.swift";
+"sourceTree" = "<group>";
 };
 "A00000000000000000000015" = {
 "path" = "Info.plist";
@@ -28,50 +32,9 @@
 "lastKnownFileType" = "text.plist.xml";
 "sourceTree" = "<group>";
 };
-"A00000000000000000000004" = {
-"isa" = "PBXGroup";
-"name" = "Products";
-"children" = ("A00000000000000000000009","D00000000000000000000001");
-"sourceTree" = "<group>";
-};
-"B00000000000000000000002" = {
-"path" = "ContentView.swift";
-"isa" = "PBXFileReference";
-"lastKnownFileType" = "sourcecode.swift";
-"sourceTree" = "<group>";
-};
-"A00000000000000000000009" = {
-"path" = "TrashBotUWB.app";
-"isa" = "PBXFileReference";
-"includeInIndex" = "0";
-"explicitFileType" = "wrapper.application";
-"sourceTree" = "BUILT_PRODUCTS_DIR";
-};
-"C00000000000000000000001" = {
+"C00000000000000000000000" = {
 "isa" = "PBXBuildFile";
-"fileRef" = "B00000000000000000000001";
-};
-"A00000000000000000000013" = {
-"isa" = "PBXResourcesBuildPhase";
-"buildActionMask" = "2147483647";
-"files" = ();
-"runOnlyForDeploymentPostprocessing" = "0";
-};
-"A00000000000000000000002" = {
-"isa" = "XCConfigurationList";
-"defaultConfigurationIsVisible" = "0";
-"defaultConfigurationName" = "Release";
-"buildConfigurations" = ("A00000000000000000000006","A00000000000000000000007");
-};
-"B00000000000000000000000" = {
-"path" = "RangingModel.swift";
-"isa" = "PBXFileReference";
-"lastKnownFileType" = "sourcecode.swift";
-"sourceTree" = "<group>";
-};
-"A00000000000000000000018" = {
-"isa" = "PBXBuildFile";
-"fileRef" = "A00000000000000000000014";
+"fileRef" = "B00000000000000000000000";
 };
 "A00000000000000000000007" = {
 "isa" = "XCBuildConfiguration";
@@ -82,76 +45,6 @@
 "SDKROOT" = "iphoneos";
 };
 "name" = "Release";
-};
-"A00000000000000000000011" = {
-"isa" = "PBXSourcesBuildPhase";
-"buildActionMask" = "2147483647";
-"files" = ("A00000000000000000000018","C00000000000000000000000","C00000000000000000000001","C00000000000000000000002");
-"runOnlyForDeploymentPostprocessing" = "0";
-};
-"A00000000000000000000016" = {
-"isa" = "XCBuildConfiguration";
-"buildSettings" = {
-"GENERATE_INFOPLIST_FILE" = "YES";
-"CURRENT_PROJECT_VERSION" = "1";
-"MARKETING_VERSION" = "1.0";
-"INFOPLIST_FILE" = "TrashBotUWB/Info.plist";
-"CODE_SIGN_STYLE" = "Automatic";
-"PRODUCT_BUNDLE_IDENTIFIER" = "org.trashketball.TrashBotUWB";
-"SWIFT_VERSION" = "5.0";
-"TARGETED_DEVICE_FAMILY" = "1";
-"PRODUCT_NAME" = "$(TARGET_NAME)";
-"DEVELOPMENT_TEAM" = "WV6FM2ZFTW";
-};
-"name" = "Debug";
-};
-"A00000000000000000000005" = {
-"productType" = "com.apple.product-type.application";
-"productReference" = "A00000000000000000000009";
-"buildConfigurationList" = "A00000000000000000000010";
-"productName" = "TrashBotUWB";
-"isa" = "PBXNativeTarget";
-"buildPhases" = ("A00000000000000000000011","A00000000000000000000012","A00000000000000000000013");
-"dependencies" = ();
-"name" = "TrashBotUWB";
-"buildRules" = ();
-};
-"C00000000000000000000002" = {
-"isa" = "PBXBuildFile";
-"fileRef" = "B00000000000000000000002";
-};
-"A00000000000000000000014" = {
-"path" = "TrashBotUWB.swift";
-"isa" = "PBXFileReference";
-"lastKnownFileType" = "sourcecode.swift";
-"sourceTree" = "<group>";
-};
-"A00000000000000000000003" = {
-"isa" = "PBXGroup";
-"sourceTree" = "<group>";
-"children" = ("A00000000000000000000008","A00000000000000000000004","D00000000000000000000004");
-};
-"B00000000000000000000001" = {
-"path" = "GameState.swift";
-"isa" = "PBXFileReference";
-"lastKnownFileType" = "sourcecode.swift";
-"sourceTree" = "<group>";
-};
-"C00000000000000000000000" = {
-"isa" = "PBXBuildFile";
-"fileRef" = "B00000000000000000000000";
-};
-"A00000000000000000000008" = {
-"path" = "TrashBotUWB";
-"isa" = "PBXGroup";
-"children" = ("A00000000000000000000014","A00000000000000000000015","B00000000000000000000000","B00000000000000000000001","B00000000000000000000002");
-"sourceTree" = "<group>";
-};
-"A00000000000000000000012" = {
-"isa" = "PBXFrameworksBuildPhase";
-"buildActionMask" = "2147483647";
-"files" = ();
-"runOnlyForDeploymentPostprocessing" = "0";
 };
 "A00000000000000000000001" = {
 "buildConfigurationList" = "A00000000000000000000002";
@@ -169,43 +62,86 @@
 "projectRoot" = "";
 "mainGroup" = "A00000000000000000000003";
 };
-"A00000000000000000000017" = {
+"D00000000000000000000007" = {
 "isa" = "XCBuildConfiguration";
+"name" = "Debug";
 "buildSettings" = {
 "GENERATE_INFOPLIST_FILE" = "YES";
-"CURRENT_PROJECT_VERSION" = "1";
-"MARKETING_VERSION" = "1.0";
-"INFOPLIST_FILE" = "TrashBotUWB/Info.plist";
-"CODE_SIGN_STYLE" = "Automatic";
-"PRODUCT_BUNDLE_IDENTIFIER" = "org.trashketball.TrashBotUWB";
+"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
+"PRODUCT_BUNDLE_IDENTIFIER" = "org.trashketball.UITests";
 "SWIFT_VERSION" = "5.0";
+"CODE_SIGN_STYLE" = "Automatic";
+"TEST_TARGET_NAME" = "TrashBotUWB";
 "TARGETED_DEVICE_FAMILY" = "1";
 "PRODUCT_NAME" = "$(TARGET_NAME)";
-"DEVELOPMENT_TEAM" = "WV6FM2ZFTW";
 };
-"name" = "Release";
-};
-"D00000000000000000000002" = {
-"isa" = "PBXFileReference";
-"lastKnownFileType" = "sourcecode.swift";
-"path" = "OfflineLocateTests.swift";
-"sourceTree" = "<group>";
-};
-"D00000000000000000000003" = {
-"isa" = "PBXBuildFile";
-"fileRef" = "D00000000000000000000002";
-};
-"D00000000000000000000004" = {
-"isa" = "PBXGroup";
-"path" = "TrashBotUITests";
-"sourceTree" = "<group>";
-"children" = ("D00000000000000000000002");
 };
 "D00000000000000000000001" = {
+"path" = "TrashBotUITests.xctest";
 "isa" = "PBXFileReference";
 "explicitFileType" = "wrapper.cfbundle";
-"path" = "TrashBotUITests.xctest";
 "sourceTree" = "BUILT_PRODUCTS_DIR";
+};
+"A00000000000000000000014" = {
+"path" = "TrashBotUWB.swift";
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "sourcecode.swift";
+"sourceTree" = "<group>";
+};
+"A00000000000000000000006" = {
+"isa" = "XCBuildConfiguration";
+"buildSettings" = {
+"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
+"CLANG_ENABLE_MODULES" = "YES";
+"SDKROOT" = "iphoneos";
+};
+"name" = "Debug";
+};
+"D00000000000000000000006" = {
+"isa" = "XCConfigurationList";
+"defaultConfigurationIsVisible" = "0";
+"defaultConfigurationName" = "Release";
+"buildConfigurations" = ("D00000000000000000000007","D00000000000000000000008");
+};
+"D00000000000000000000000" = {
+"productReference" = "D00000000000000000000001";
+"productType" = "com.apple.product-type.bundle.ui-testing";
+"buildConfigurationList" = "D00000000000000000000006";
+"productName" = "TrashBotUITests";
+"isa" = "PBXNativeTarget";
+"buildPhases" = ("D00000000000000000000005");
+"dependencies" = ("D0000000000000000000000A");
+"name" = "TrashBotUITests";
+"buildRules" = ();
+};
+"A00000000000000000000013" = {
+"isa" = "PBXResourcesBuildPhase";
+"buildActionMask" = "2147483647";
+"files" = ();
+"runOnlyForDeploymentPostprocessing" = "0";
+};
+"B00000000000000000000002" = {
+"path" = "ContentView.swift";
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "sourcecode.swift";
+"sourceTree" = "<group>";
+};
+"A00000000000000000000005" = {
+"productType" = "com.apple.product-type.application";
+"productReference" = "A00000000000000000000009";
+"buildConfigurationList" = "A00000000000000000000010";
+"productName" = "TrashBotUWB";
+"isa" = "PBXNativeTarget";
+"buildPhases" = ("A00000000000000000000011","A00000000000000000000012","A00000000000000000000013");
+"dependencies" = ();
+"name" = "TrashBotUWB";
+"buildRules" = ();
+};
+"D0000000000000000000000A" = {
+"isa" = "PBXTargetDependency";
+"target" = "A00000000000000000000005";
+"targetProxy" = "D00000000000000000000009";
 };
 "D00000000000000000000005" = {
 "isa" = "PBXSourcesBuildPhase";
@@ -213,62 +149,156 @@
 "files" = ("D00000000000000000000003");
 "runOnlyForDeploymentPostprocessing" = "0";
 };
-"D00000000000000000000006" = {
-"isa" = "XCConfigurationList";
-"buildConfigurations" = ("D00000000000000000000007","D00000000000000000000008");
-"defaultConfigurationIsVisible" = "0";
-"defaultConfigurationName" = "Release";
+"A00000000000000000000018" = {
+"isa" = "PBXBuildFile";
+"fileRef" = "A00000000000000000000014";
 };
-"D00000000000000000000007" = {
+"A00000000000000000000012" = {
+"isa" = "PBXFrameworksBuildPhase";
+"buildActionMask" = "2147483647";
+"files" = ();
+"runOnlyForDeploymentPostprocessing" = "0";
+};
+"B00000000000000000000001" = {
+"path" = "GameState.swift";
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "sourcecode.swift";
+"sourceTree" = "<group>";
+};
+"A00000000000000000000004" = {
+"isa" = "PBXGroup";
+"name" = "Products";
+"children" = ("A00000000000000000000009","D00000000000000000000001");
+"sourceTree" = "<group>";
+};
+"D00000000000000000000004" = {
+"path" = "TrashBotUITests";
+"isa" = "PBXGroup";
+"sourceTree" = "<group>";
+"children" = ("D00000000000000000000002");
+};
+"A00000000000000000000017" = {
 "isa" = "XCBuildConfiguration";
-"name" = "Debug";
 "buildSettings" = {
-"PRODUCT_NAME" = "$(TARGET_NAME)";
-"PRODUCT_BUNDLE_IDENTIFIER" = "org.trashketball.UITests";
 "GENERATE_INFOPLIST_FILE" = "YES";
-"SWIFT_VERSION" = "5.0";
-"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
-"TEST_TARGET_NAME" = "TrashBotUWB";
-"TARGETED_DEVICE_FAMILY" = "1";
+"DEVELOPMENT_TEAM" = "WV6FM2ZFTW";
+"MARKETING_VERSION" = "1.0";
+"INFOPLIST_FILE" = "TrashBotUWB/Info.plist";
 "CODE_SIGN_STYLE" = "Automatic";
+"PRODUCT_BUNDLE_IDENTIFIER" = "org.trashketball.TrashBotUWB";
+"SWIFT_VERSION" = "5.0";
+"TARGETED_DEVICE_FAMILY" = "1";
+"CURRENT_PROJECT_VERSION" = "1";
+"PRODUCT_NAME" = "$(TARGET_NAME)";
 };
-};
-"D00000000000000000000008" = {
-"isa" = "XCBuildConfiguration";
 "name" = "Release";
-"buildSettings" = {
-"PRODUCT_NAME" = "$(TARGET_NAME)";
-"PRODUCT_BUNDLE_IDENTIFIER" = "org.trashketball.UITests";
-"GENERATE_INFOPLIST_FILE" = "YES";
-"SWIFT_VERSION" = "5.0";
-"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
-"TEST_TARGET_NAME" = "TrashBotUWB";
-"TARGETED_DEVICE_FAMILY" = "1";
-"CODE_SIGN_STYLE" = "Automatic";
 };
+"A00000000000000000000011" = {
+"isa" = "PBXSourcesBuildPhase";
+"buildActionMask" = "2147483647";
+"files" = ("A00000000000000000000018","C00000000000000000000000","C00000000000000000000001","C00000000000000000000002","F00000000000000000000000","F00000000000000000000001","F00000000000000000000002");
+"runOnlyForDeploymentPostprocessing" = "0";
+};
+"C00000000000000000000002" = {
+"isa" = "PBXBuildFile";
+"fileRef" = "B00000000000000000000002";
+};
+"B00000000000000000000000" = {
+"path" = "RangingModel.swift";
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "sourcecode.swift";
+"sourceTree" = "<group>";
+};
+"A00000000000000000000009" = {
+"path" = "TrashBotUWB.app";
+"isa" = "PBXFileReference";
+"includeInIndex" = "0";
+"explicitFileType" = "wrapper.application";
+"sourceTree" = "BUILT_PRODUCTS_DIR";
+};
+"A00000000000000000000003" = {
+"isa" = "PBXGroup";
+"sourceTree" = "<group>";
+"children" = ("A00000000000000000000008","A00000000000000000000004","D00000000000000000000004");
 };
 "D00000000000000000000009" = {
 "isa" = "PBXContainerItemProxy";
 "containerPortal" = "A00000000000000000000001";
-"proxyType" = "1";
 "remoteGlobalIDString" = "A00000000000000000000005";
 "remoteInfo" = "TrashBotUWB";
+"proxyType" = "1";
 };
-"D0000000000000000000000A" = {
-"isa" = "PBXTargetDependency";
-"target" = "A00000000000000000000005";
-"targetProxy" = "D00000000000000000000009";
+"D00000000000000000000003" = {
+"isa" = "PBXBuildFile";
+"fileRef" = "D00000000000000000000002";
 };
-"D00000000000000000000000" = {
-"isa" = "PBXNativeTarget";
-"name" = "TrashBotUITests";
-"productName" = "TrashBotUITests";
-"productReference" = "D00000000000000000000001";
-"productType" = "com.apple.product-type.bundle.ui-testing";
-"buildConfigurationList" = "D00000000000000000000006";
-"buildPhases" = ("D00000000000000000000005");
-"dependencies" = ("D0000000000000000000000A");
-"buildRules" = ();
+"A00000000000000000000016" = {
+"isa" = "XCBuildConfiguration";
+"buildSettings" = {
+"GENERATE_INFOPLIST_FILE" = "YES";
+"DEVELOPMENT_TEAM" = "WV6FM2ZFTW";
+"MARKETING_VERSION" = "1.0";
+"INFOPLIST_FILE" = "TrashBotUWB/Info.plist";
+"CODE_SIGN_STYLE" = "Automatic";
+"PRODUCT_BUNDLE_IDENTIFIER" = "org.trashketball.TrashBotUWB";
+"SWIFT_VERSION" = "5.0";
+"TARGETED_DEVICE_FAMILY" = "1";
+"CURRENT_PROJECT_VERSION" = "1";
+"PRODUCT_NAME" = "$(TARGET_NAME)";
+};
+"name" = "Debug";
+};
+"A00000000000000000000010" = {
+"isa" = "XCConfigurationList";
+"defaultConfigurationIsVisible" = "0";
+"defaultConfigurationName" = "Release";
+"buildConfigurations" = ("A00000000000000000000016","A00000000000000000000017");
+};
+"C00000000000000000000001" = {
+"isa" = "PBXBuildFile";
+"fileRef" = "B00000000000000000000001";
+};
+"A00000000000000000000008" = {
+"path" = "TrashBotUWB";
+"isa" = "PBXGroup";
+"children" = ("A00000000000000000000014","A00000000000000000000015","B00000000000000000000000","B00000000000000000000001","B00000000000000000000002","E00000000000000000000000","E00000000000000000000001","E00000000000000000000002");
+"sourceTree" = "<group>";
+};
+"A00000000000000000000002" = {
+"isa" = "XCConfigurationList";
+"defaultConfigurationIsVisible" = "0";
+"defaultConfigurationName" = "Release";
+"buildConfigurations" = ("A00000000000000000000006","A00000000000000000000007");
+};
+"E00000000000000000000000" = {
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "sourcecode.swift";
+"path" = "DepthGeometry.swift";
+"sourceTree" = "<group>";
+};
+"F00000000000000000000000" = {
+"isa" = "PBXBuildFile";
+"fileRef" = "E00000000000000000000000";
+};
+"E00000000000000000000001" = {
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "sourcecode.swift";
+"path" = "LidarModel.swift";
+"sourceTree" = "<group>";
+};
+"F00000000000000000000001" = {
+"isa" = "PBXBuildFile";
+"fileRef" = "E00000000000000000000001";
+};
+"E00000000000000000000002" = {
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "sourcecode.swift";
+"path" = "LidarDebugView.swift";
+"sourceTree" = "<group>";
+};
+"F00000000000000000000002" = {
+"isa" = "PBXBuildFile";
+"fileRef" = "E00000000000000000000002";
 };
 };
 "rootObject" = "A00000000000000000000001";

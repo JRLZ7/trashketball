@@ -131,7 +131,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, result)
 
     def do_POST(self):
-        if self.path not in ('/measurements', '/control'):
+        if self.path not in ('/measurements', '/control', '/inspection'):
             return self.reply(404, {'error': 'not found'})
         if not self.authorized():
             return self.reply(401, {'error': 'unauthorized'})
@@ -148,7 +148,11 @@ class Handler(BaseHTTPRequestHandler):
         response_error = None
         with control_lock:
             try:
-                if self.path == '/control':
+                if self.path == '/inspection':
+                    if not isinstance(data, dict) or type(data.get('enabled')) is not bool:
+                        raise MotionError('Inspection enabled must be a boolean')
+                    controller.set_inspection(data['enabled'])
+                elif self.path == '/control':
                     controller.control(data)
                 else:
                     controller.ingest(data)
