@@ -206,7 +206,14 @@ let centerBox = (-4...4).flatMap { x in (0..<4).map { j in
     DepthSample(world:SIMD3(Float(x)*0.025,0.2,-0.6-Float(j)*0.005),confidence:2)
 } }
 let openScan = AvoidanceGeometry.scan(samples:arena,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
-let boxScan = AvoidanceGeometry.scan(samples:arena+centerBox,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+let distantBoxScan = AvoidanceGeometry.scan(samples:arena+centerBox,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+assert(distantBoxScan.nearestLane(to:0)?.isOpen == true, "A box 60 cm ahead must not trigger avoidance")
+// Keep deterministic blocked/open lanes for detour-state tests independently
+// of the new short-range geometry and its separate backup trigger.
+var boxScan = distantBoxScan
+boxScan.lanes = boxScan.lanes.map { lane in
+    abs(lane.angle) < .pi/4 ? AvoidanceLane(angle:lane.angle,corridor:CorridorEstimate(nearestObstacle:0.3)) : lane
+}
 assert(openScan.lanes.count == 9 && openScan.lanes.allSatisfy(\.isOpen))
 assert(boxScan.nearestLane(to:0)?.isOpen == false)
 assert(boxScan.lanes.contains { $0.angle < 0 && $0.isOpen } && boxScan.lanes.contains { $0.angle > 0 && $0.isOpen })
@@ -281,8 +288,8 @@ let radialWall = stride(from:Float(-80),through:80,by:2).flatMap { deg in (0..<4
     return DepthSample(world:SIMD3(sin(a)*0.6,0.2,-cos(a)*0.6-Float(n)*0.001),confidence:2)
 } }
 let enclosed = AvoidanceGeometry.scan(samples:arena+radialWall,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
-assert(enclosed.lanes.allSatisfy { !$0.isOpen })
-assert(navigation(&navigator,scan:enclosed).action == "stop", "No escape lane must stop")
+assert(enclosed.lanes.allSatisfy { $0.isOpen })
+assert(navigation(&navigator,scan:enclosed).action == "forward", "Walls 60 cm away must not trigger early avoidance")
 print("Detour rejoin frame counting and enclosed-path checks passed")
 
 // End-to-end kinematic exercise: turn, pass a box, rejoin, and stop at the player.
@@ -313,13 +320,19 @@ for step in 0..<500 {
         yaw:simFrameYaw,position:simPose,world:navWorld,frameTime:simFrameTime,now:time,targetMeters:1,
         previousAction:simPrevious,driving:true)
     if decision.message.hasPrefix("Arrived") { arrived = true; break }
-    assert(decision.action != "stop", "Unexpected simulated stop: \(decision.message), step \(step)")
+    if decision.action == "stop" {
+        assert(decision.recoverableSensorWait, "Unexpected simulated final stop: \(decision.message), step \(step)")
+    }
+    if decision.action == "reverse" && simPrevious != "reverse" {
+        simulation.beginReverseCommand(now:time,position:simPosition)
+    }
+    if decision.action == "reverse" { simPosition -= SIMD2(sin(simYaw),-cos(simYaw))*0.02 }
     sawDetour = sawDetour || decision.avoiding
     if decision.action == "left" { simYaw -= 0.09 }
     if decision.action == "right" { simYaw += 0.09 }
     if decision.action == "forward" { simPosition += SIMD2(sin(simYaw),-cos(simYaw))*0.02 }
     for point in centerBox {
-        assert(simd_distance(simPosition,SIMD2(point.world.x,point.world.z)) > 0.23, "Simulated footprint hits obstacle")
+        assert(simd_distance(simPosition,SIMD2(point.world.x,point.world.z)) > AssumedRobotDimensions.width/2, "Simulated body hits obstacle")
     }
     simPrevious = decision.action
 }
@@ -387,7 +400,7 @@ let slightAngle: Float = 0.14
 let slightApproach = navigation(&navigator,scan:openScan,angle:slightAngle)
 assert(slightApproach.action == "forward", "An 8-degree player bearing is within forward tolerance even when nearest clearance lane is 15 degrees")
 navigator.reset()
-let exactApproach = navigation(&navigator,scan:openScan,angle:0.34)
+let exactApproach = navigation(&navigator,scan:openScan,angle:0.34,distance:1.5)
 assert(exactApproach.action == "right")
 assert(abs(exactApproach.turnDegrees!-0.34*180/Float.pi) < 0.001, "Turn guidance must report the measured bearing rather than the lane center")
 navigator.reset()
@@ -451,7 +464,7 @@ var towardPlayer = escapeForward
 for time in [101.0,101.2,101.4] {
     towardPlayer = navigation(&navigator,scan:openScan,angle:-escapeYaw,yaw:escapeYaw,position:escapeProgress,time:time,driving:true)
 }
-assert(!towardPlayer.avoiding && towardPlayer.action == "right", "After retreat and detour, pursue the original player's live heading")
+assert(!towardPlayer.avoiding && towardPlayer.action == "forward", "After retreat and detour, resume pursuit; a 15-degree far bearing is within the new tolerance")
 
 var noSide = frontBlockedScan
 noSide.lanes = noSide.lanes.map { AvoidanceLane(angle:$0.angle,corridor:CorridorEstimate(nearestObstacle:0.25)) }
@@ -487,3 +500,24 @@ navigator.reset()
 assert(navigation(&navigator,scan:emergency,distance:1).message.contains("EMERGENCY STOP"), "Emergency reason outranks arrival")
 navigator.reset()
 assert(!navigation(&navigator,scan:emergency,depthAge:1).message.contains("EMERGENCY STOP"), "Old depth cannot fabricate a fresh 5 cm measurement")
+
+// Distance-aware pursuit: tolerate a small early error, tighten on approach,
+// and retain a smaller exit threshold while a pivot is already in progress.
+for side:Float in [-1,1] {
+    navigator.reset()
+    assert(navigation(&navigator,scan:openScan,angle:side*0.30,distance:4).action == "forward")
+    navigator.reset()
+    assert(navigation(&navigator,scan:openScan,angle:side*0.30,distance:1.5).action == (side > 0 ? "right" : "left"))
+    navigator.reset()
+    assert(navigation(&navigator,scan:openScan,angle:side*0.40,distance:4).action == (side > 0 ? "right" : "left"))
+}
+let nearCluster = (0..<4).map { DepthSample(world:SIMD3(Float($0)*0.002,0.2,-0.3),confidence:2) }
+let nearScan = AvoidanceGeometry.scan(samples:arena+nearCluster,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+navigator.reset()
+assert(navigation(&navigator,scan:nearScan).action == "reverse", "An observed front obstacle within 35 cm still triggers bounded recovery")
+let beyondCluster = (0..<4).map { DepthSample(world:SIMD3(Float($0)*0.002,0.2,-0.38),confidence:2) }
+let beyondScan = AvoidanceGeometry.scan(samples:arena+beyondCluster,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+navigator.reset()
+assert(beyondScan.nearestLane(to:0)!.isOpen, "Obstacle beyond 35 cm must not poison the first floor grid row")
+assert(navigation(&navigator,scan:beyondScan).action == "forward")
+print("35 cm obstacle reactions and distance-aware pursuit thresholds passed")
