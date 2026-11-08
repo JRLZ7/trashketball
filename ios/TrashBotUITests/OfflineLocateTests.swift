@@ -1,6 +1,50 @@
 import XCTest
 
 final class OfflineLocateTests: XCTestCase {
+    func testEmergencyStopReasonRemainsVisibleToPlayer() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-role","User","--ui-test-emergency-stop"]
+        app.launch()
+        app.tabBars.buttons["Locate"].tap()
+        for _ in 0..<3 { app.swipeUp() }
+        assertStatus("EMERGENCY STOP · measured obstacle 4.0 cm away (5 cm limit)",in:app)
+        app.tabBars.buttons["Play"].tap()
+        app.tabBars.buttons["Locate"].tap()
+        assertStatus("EMERGENCY STOP · measured obstacle 4.0 cm away (5 cm limit)",in:app)
+        XCTAssertFalse(app.buttons["Start guided approach"].isEnabled)
+    }
+
+    func testMissingHeadingKeepsPhoneLinkConnected() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-role","Robot","--ui-test-heading-gap"]
+        app.launch()
+        app.tabBars.buttons["Connect"].tap()
+        assertStatus("Phones connected · heading temporarily unavailable",in:app)
+        XCTAssertTrue(app.buttons["Disconnect"].exists)
+        app.buttons["Disconnect"].tap()
+        XCTAssertTrue(app.buttons["Connect phones"].waitForExistence(timeout:5))
+        XCTAssertFalse(app.buttons["Retry tracking"].isEnabled)
+    }
+
+    func testPeerLinkLossKeepsRecoverySessionRunning() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-role","Robot","--ui-test-peer-link-loss"]
+        app.launch()
+        app.tabBars.buttons["Connect"].tap()
+        assertStatus("Phone link lost · searching automatically",in:app)
+        XCTAssertTrue(app.buttons["Disconnect"].exists)
+        app.buttons["Disconnect"].tap()
+        XCTAssertTrue(app.buttons["Connect phones"].waitForExistence(timeout:5))
+        app.tabBars.buttons["Locate"].tap()
+        app.tabBars.buttons["Connect"].tap()
+        XCTAssertTrue(app.buttons["Connect phones"].exists)
+    }
+
+    private func assertStatus(_ value:String,in app:XCUIApplication) {
+        let item = app.descendants(matching:.any).matching(NSPredicate(format:"label CONTAINS %@ OR value CONTAINS %@",value,value)).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout:5),app.debugDescription)
+    }
+
     func testCanPhoneCanNavigateWhilePiIsUnavailable() {
         let app = XCUIApplication()
         // Debug-only harness sends real requests to a closed localhost port, without UWB hardware.

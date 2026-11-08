@@ -250,7 +250,7 @@ let unknownScan = AvoidanceGeometry.scan(samples:[],origin:arenaOrigin,forward:S
 assert(navigation(&navigator,scan:unknownScan).action == "stop", "Unknown sides cannot be chosen")
 navigator.reset()
 var tooClose = openScan; tooClose.nearestRadialObstacle = 0.3
-assert(navigation(&navigator,scan:tooClose).message.contains("too close to pivot"))
+assert(navigation(&navigator,scan:tooClose).action == "forward", "A side object at 30 cm is no longer an instant emergency stop")
 navigator.reset()
 assert(navigation(&navigator,scan:openScan,age:0.3).action == "stop")
 assert(navigation(&navigator,scan:openScan,depthAge:0.5).action == "stop")
@@ -378,7 +378,7 @@ assert(abs(staleWrongFloor.y!) < 0.001, "An expired wrong plane must not permane
 print("Expired wrong floor can recover automatically without UWB recalibration")
 
 for decision in [detourChoice,afterTurn,rejoined] {
-    assert(decision.action == "forward" ? decision.speed == 100 : (35...55).contains(decision.speed), "Pivots taper while forward commands retain full scale")
+    assert(decision.speed == 100, "All movement, including pivots, uses 100%")
 }
 
 // A bearing near a lane boundary must not become a quantized 15-degree pivot.
@@ -397,36 +397,93 @@ assert(navigation(&navigator,scan:openScan,depthAge:1).recoverableSensorWait)
 navigator.reset()
 assert(!navigation(&navigator,scan:openScan,distance:1).recoverableSensorWait, "Arrival is final")
 navigator.reset()
-assert(!navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes,nearestRadialObstacle:0.2)).recoverableSensorWait, "A blocked route must not auto-resume")
+assert(!navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes,nearestRadialObstacle:0.04)).recoverableSensorWait, "A blocked route must not auto-resume")
 print("Measured-bearing steering and recoverable sensor-gap classification passed")
 
-// Differential steering corrects small drift without alternating pivot actions.
+// Every valid movement uses full requested output, without hidden per-wheel reductions.
+for angle:Float in [-0.9,-0.24,-0.1,0,0.1,0.24,0.9] {
+    navigator.reset()
+    let decision = navigation(&navigator,scan:openScan,angle:angle)
+    assert(decision.action != "stop" && decision.speed == 100)
+    assert(decision.leftPercent == nil && decision.rightPercent == nil)
+}
 navigator.reset()
-let correctRight = navigation(&navigator,scan:openScan,angle:0.10)
-assert(correctRight.action == "forward" && correctRight.leftPercent == 100 && correctRight.rightPercent == 90)
-navigator.reset()
-let correctLeft = navigation(&navigator,scan:openScan,angle:-0.10)
-assert(correctLeft.leftPercent == 90 && correctLeft.rightPercent == 100)
-navigator.reset()
-let noCorrection = navigation(&navigator,scan:openScan,angle:0)
-assert(noCorrection.leftPercent == 100 && noCorrection.rightPercent == 100)
-navigator.reset()
-let slowNear = navigation(&navigator,scan:openScan,angle:0.24)
-navigator.reset()
-let slowFar = navigation(&navigator,scan:openScan,angle:0.9)
-assert(slowNear.speed < slowFar.speed && slowFar.speed <= 55)
 _ = navigation(&navigator,scan:openScan,angle:0.9,yaw:0,time:0)
-let damped = navigation(&navigator,scan:openScan,angle:0.9,yaw:0.4,time:0.2,previous:"right")
-assert(damped.speed < slowFar.speed, "Existing rotation toward the target damps pivot output")
-navigator.reset()
-_ = navigation(&navigator,scan:openScan,angle:0,yaw:0,time:0)
-let drift = navigation(&navigator,scan:openScan,angle:0,yaw:0.4,time:0.2)
-assert(drift.leftPercent! < drift.rightPercent!, "Rightward measured rotation is countered before a large bearing error develops")
+let movingPivot = navigation(&navigator,scan:openScan,angle:0.9,yaw:0.4,time:0.2,previous:"right")
+assert(movingPivot.speed == 100, "Yaw feedback can end a turn earlier but cannot lower requested power")
 navigator.reset()
 let unobserved = navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes.map { AvoidanceLane(angle:$0.angle,corridor:CorridorEstimate()) }))
 assert(unobserved.action == "stop" && unobserved.recoverableSensorWait && unobserved.recoveryTimeout == 8)
 assert(unobserved.message.contains("not observed"))
 navigator.reset()
-let closeObstacle = navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes,nearestRadialObstacle:0.2))
+let closeObstacle = navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes,nearestRadialObstacle:0.04))
 assert(closeObstacle.action == "stop" && !closeObstacle.recoverableSensorWait)
-print("Tapered/damped pivots, differential drift correction, bounded route waits and close-obstacle stops passed")
+print("Full-power forward/pivots, bounded route waits and close-obstacle stops passed")
+
+// Front-hit detection is distinct from a nearby side object.
+let frontCluster = (0..<4).map { DepthSample(world:SIMD3(Float($0)*0.002,0.2,-0.25),confidence:2) }
+let frontalScan = AvoidanceGeometry.scan(samples:arena+frontCluster,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+assert(abs(frontalScan.nearestFrontObstacle!-0.25) < 0.01)
+let sideCluster = (0..<4).map { DepthSample(world:SIMD3(0.32,0.2,-0.2-Float($0)*0.001),confidence:2) }
+let sideScan = AvoidanceGeometry.scan(samples:arena+sideCluster,origin:arenaOrigin,forward:SIMD3(0,0,-1),floorY:0)
+assert(sideScan.nearestFrontObstacle == nil)
+
+var frontBlockedScan = openScan
+frontBlockedScan.nearestFrontObstacle = 0.25
+frontBlockedScan.nearestRadialObstacle = 0.25
+frontBlockedScan.lanes = openScan.lanes.map { abs($0.angle) < 0.1 ? AvoidanceLane(angle:$0.angle,corridor:CorridorEstimate(nearestObstacle:0.25)) : $0 }
+navigator.reset()
+assert(navigation(&navigator,scan:frontBlockedScan).action == "reverse")
+assert(navigation(&navigator,scan:frontBlockedScan,time:100).action == "reverse", "Preview time cannot consume the motor backup budget")
+navigator.beginReverseCommand(now:100,position:.zero)
+let backing = navigation(&navigator,scan:frontBlockedScan,position:SIMD2(0,0.02),time:100.1,driving:true)
+assert(backing.action == "reverse" && backing.speed == 100)
+let backedPosition = SIMD2<Float>(0,0.06)
+let lookForSide = navigation(&navigator,scan:frontBlockedScan,position:backedPosition,time:100.2,driving:true)
+assert(lookForSide.action == "stop" && lookForSide.recoverableSensorWait, "Stop before switching from reverse to a side turn")
+let escape = navigation(&navigator,scan:frontBlockedScan,position:backedPosition,time:100.4,driving:true)
+assert(escape.avoiding && escape.action == "left" && escape.speed == 100)
+let escapeYaw = escape.turnDegrees!*Float.pi/180
+let escapeForward = navigation(&navigator,scan:openScan,angle:-escapeYaw,yaw:escapeYaw,position:backedPosition,time:100.8,driving:true,previous:"left")
+assert(escapeForward.action == "forward" && escapeForward.avoiding)
+let escapeProgress = backedPosition+SIMD2(sin(escapeYaw),-cos(escapeYaw))*0.36
+var towardPlayer = escapeForward
+for time in [101.0,101.2,101.4] {
+    towardPlayer = navigation(&navigator,scan:openScan,angle:-escapeYaw,yaw:escapeYaw,position:escapeProgress,time:time,driving:true)
+}
+assert(!towardPlayer.avoiding && towardPlayer.action == "right", "After retreat and detour, pursue the original player's live heading")
+
+var noSide = frontBlockedScan
+noSide.lanes = noSide.lanes.map { AvoidanceLane(angle:$0.angle,corridor:CorridorEstimate(nearestObstacle:0.25)) }
+navigator.reset()
+assert(navigation(&navigator,scan:noSide).action == "reverse")
+navigator.beginReverseCommand(now:0,position:.zero)
+assert(navigation(&navigator,scan:noSide,time:0.61,driving:true).action == "stop", "Reverse is bounded even if the wheels stall")
+for time in [0.8,1.0,2.0,8.0,20.0] {
+    assert(navigation(&navigator,scan:noSide,time:time,driving:true).action == "stop", "No repeated blind backups while waiting for a side")
+}
+navigator.reset()
+_ = navigation(&navigator,scan:noSide)
+navigator.beginReverseCommand(now:0,position:.zero)
+assert(navigation(&navigator,scan:noSide,position:SIMD2(0,0.16),time:0.1,driving:true).action == "stop", "AR distance ends a backup before the time limit")
+navigator.reset()
+_ = navigation(&navigator,scan:noSide)
+navigator.beginReverseCommand(now:0,position:.zero)
+assert(navigation(&navigator,scan:noSide,time:0.1,depthAge:1,driving:true).action == "stop")
+assert(navigation(&navigator,scan:noSide,time:1,driving:true).action == "stop", "A sensor gap cannot restart an expired backup")
+navigator.reset()
+var emergency = frontBlockedScan; emergency.nearestRadialObstacle = 0.049
+let emergencyDecision = navigation(&navigator,scan:emergency)
+assert(emergencyDecision.action == "stop" && !emergencyDecision.recoverableSensorWait)
+assert(emergencyDecision.message.contains("EMERGENCY STOP") && emergencyDecision.message.contains("5 cm"))
+print("Backup recovery: supported front hits, 5 cm emergency, preview/dispatch timing, reverse limits, no repeated blind backup, safe-side selection and return-to-player passed")
+
+navigator.reset()
+assert(navigation(&navigator,scan:sideScan).action != "reverse", "A side-only obstacle must not trigger blind backup through the wider lane-inflation heuristic")
+
+navigator.reset()
+assert(navigation(&navigator,scan:emergency,angle:nil).message.contains("EMERGENCY STOP"), "Fresh emergency detection outranks missing heading")
+navigator.reset()
+assert(navigation(&navigator,scan:emergency,distance:1).message.contains("EMERGENCY STOP"), "Emergency reason outranks arrival")
+navigator.reset()
+assert(!navigation(&navigator,scan:emergency,depthAge:1).message.contains("EMERGENCY STOP"), "Old depth cannot fabricate a fresh 5 cm measurement")

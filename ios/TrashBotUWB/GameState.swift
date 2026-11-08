@@ -161,6 +161,7 @@ struct GuidanceRequest: Codable {
 }
 
 struct GuidanceStatus: Codable {
+    var stopReason: String? = nil
     var sequence: Int
     var requestID: UUID?
     var previewing: Bool
@@ -245,5 +246,17 @@ enum MotionDispatchPolicy {
     static func interrupts(current: MotionCommand?, desired: MotionCommand) -> Bool {
         guard let current else { return false }
         return current.action != desired.action
+    }
+}
+
+// Retries are bounded for invalid sessions; missing heading does not spend this budget.
+struct TrackingRetryBudget {
+    private(set) var attempts = 0
+    mutating func reset() { attempts = 0 }
+    mutating func nextDelay() -> TimeInterval? {
+        guard attempts < 3 else { return nil }
+        let delay = 0.5*pow(2,Double(attempts))
+        attempts += 1
+        return delay
     }
 }

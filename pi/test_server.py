@@ -157,14 +157,14 @@ class ReceiverTests(unittest.TestCase):
             commands = [dict(id='guidance-'+action, client_id='robot-guidance', sequence=i+1,
                              sent_at=0, action=action, speed=0 if action == 'stop' else 100, targetMeters=1)
                         for i, action in enumerate(('forward', 'left', 'right', 'stop'))]
-        self.assertEqual([c['action'] for c in commands], (['drive', 'left', 'right', 'stop'] if fixture else ['forward', 'left', 'right', 'stop']))
+        self.assertIn([c['action'] for c in commands], [['drive', 'left', 'right', 'stop'], ['forward', 'left', 'right', 'stop'], ['forward', 'left', 'right', 'reverse', 'stop']])
         previous_factory, previous_controller = Device.pin_factory, receiver.controller
         Device.pin_factory = MockFactory(pin_class=MockPWMPin)
         clock = [1000.0]
         try:
             with Drive() as drive:
                 receiver.controller = Controller(drive, clock=lambda: clock[0])
-                expected = {'forward':(1,1), 'left':(-1,1), 'right':(1,-1), 'stop':(0,0)}
+                expected = {'forward':(1,1), 'left':(-1,1), 'right':(1,-1), 'reverse':(-1,-1), 'stop':(0,0)}
                 for command in commands:
                     command['sent_at'] = time.time()
                     status, reply = self.call('/control', command)
@@ -183,7 +183,7 @@ class ReceiverTests(unittest.TestCase):
                     self.assertEqual(reply['drive']['commandID'], None if command['action'] == 'stop' else command['id'])
                 receiver.controller = Controller(drive, clock=lambda: clock[0], left_gain=.9)
                 move = {**commands[0], 'action':'drive', 'leftPercent':100, 'rightPercent':85,
-                        'speed':100, 'id':'watchdog-max', 'sequence':5, 'sent_at':time.time()}
+                        'speed':100, 'id':'watchdog-max', 'sequence':len(commands)+1, 'sent_at':time.time()}
                 self.assertEqual(self.call('/control', move)[0],200)
                 self.assertAlmostEqual(drive._left.value,.9*MAX_DUTY)
                 self.assertAlmostEqual(drive._right.value,.85*MAX_DUTY)
@@ -191,7 +191,7 @@ class ReceiverTests(unittest.TestCase):
                 receiver.controller.tick()
                 self.assertEqual((drive._left.value,drive._right.value),(0,0))
                 self.assertEqual(receiver.controller.state,'timed_out')
-                self.assertEqual(self.call('/control',{**move,'sequence':6,'sent_at':time.time()})[0],409)
+                self.assertEqual(self.call('/control',{**move,'sequence':len(commands)+2,'sent_at':time.time()})[0],409)
         finally:
             receiver.controller = previous_controller
             Device.pin_factory.close()

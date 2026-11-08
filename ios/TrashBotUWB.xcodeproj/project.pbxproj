@@ -92,6 +92,7 @@
 "isa" = "XCBuildConfiguration";
 "buildSettings" = {
 "SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "$(inherited) DEBUG";
 "IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
 "CLANG_ENABLE_MODULES" = "YES";
 "SDKROOT" = "iphoneos";

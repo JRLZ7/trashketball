@@ -18,6 +18,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     @Published private(set) var approachActive = false
     @Published private(set) var remoteApproach = false
     @Published private(set) var approachDecision = ApproachDecision()
+    @Published private(set) var lastGuidanceStop: String?
     @Published private(set) var approachNote = "Preview first; movement starts only when explicitly requested."
     @Published var approachTarget = 1
     private var sensorHold = GuidanceSensorHold()
@@ -67,7 +68,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private func publishGuidance() {
         guard isRobot, connected else { return }
         guidanceSequence += 1
-        sendMessage(kind:"guidanceStatus",value:GuidanceStatus(sequence:guidanceSequence,
+        sendMessage(kind:"guidanceStatus",value:GuidanceStatus(stopReason:lastGuidanceStop,sequence:guidanceSequence,
             requestID:handledGuidanceID,previewing:approachPreviewing,active:approachActive,paused:approachPaused,
             target:approachTarget,decision:approachDecision,note:approachNote,
             canPreview:canPreviewApproach,canStart:canStartApproach,floor:lidar.snapshot.floorStatus))
@@ -112,6 +113,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         guard !approachPreviewing else { return }
         avoidanceNavigator.reset()
         approachPreviewing = true
+        lastGuidanceStop = nil
         approachNote = "Preview only · motors are not controlled by this preview."
         lidar.startPreview(avoidance:true)
         tickApproach()
@@ -136,7 +138,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
               status.left == 0, status.right == 0, motion == nil, controlRequest == nil else {
             approachNote = "Pi must be connected and stopped. Stop existing movement first."; return
         }
-        driveError = nil
+        driveError = nil; lastGuidanceStop = nil
         sensorHold.reset()
         approachAckUptime = ProcessInfo.processInfo.systemUptime
         approachActive = true
@@ -147,6 +149,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private func endApproach(_ reason: String) {
         guard approachActive else { return }
         approachActive = false
+        lastGuidanceStop = reason
         approachNote = reason + " · press Start to try again."
         sendMessage(kind: "approach", value: false)
         stopMotion()
@@ -162,7 +165,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
             scan: lidar.snapshot.avoidance, fallbackCorridor: lidar.snapshot.corridor,
             yaw: lidar.snapshot.yawDegrees.map { $0*Float.pi/180 }, position: lidar.snapshot.robotPosition,
             world: lidar.snapshot.worldID, frameTime: lidar.snapshot.timestamp.timeIntervalSince1970,
-            now: now.timeIntervalSince1970, targetMeters: approachTarget, previousAction: previous, driving: approachActive)
+            now: ProcessInfo.processInfo.systemUptime, targetMeters: approachTarget, previousAction: previous, driving: approachActive)
         lidar.updateAvoidanceTarget(avoidanceNavigator.waypoint)
         guard approachActive else { return }
         guard connected, !inspectionActive, !remoteInspection, running, driveIsLive(at: now), driveStatus?.enabled == true,
@@ -172,8 +175,8 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         if approachDecision.action == "stop" {
             guard approachDecision.recoverableSensorWait else { endApproach(approachDecision.message); return }
             sensorHold.pause(at:now.timeIntervalSince1970,timeout:approachDecision.recoveryTimeout)
-            approachNote = "Paused · " + approachDecision.message + String(format:"; waiting up to %.0f s for a confirmed clear route. Stop before manual reversing.",sensorHold.timeout)
-            if sensorHold.expired(at:now.timeIntervalSince1970) { endApproach("Stopped · readings or observed route did not recover"); return }
+            approachNote = "Paused · " + approachDecision.message + String(format:"; waiting up to %.0f s for fresh tracking/clearance; motors remain stopped.",sensorHold.timeout)
+            if sensorHold.expired(at:now.timeIntervalSince1970) { endApproach("Recovery timed out · " + approachDecision.message); return }
             if motion?.action != "stop" && (motion != nil || activeAction != nil) { haltGuidanceMotors() }
             return
         }
@@ -181,8 +184,14 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
             guard !sensorHold.expired(at:now.timeIntervalSince1970) else { endApproach("Stopped · clearance recovery timed out"); return }
             guard motion == nil, controlRequest == nil, driveStatus?.state == "stopped",
                   driveStatus?.commandID == nil, driveStatus?.left == 0, driveStatus?.right == 0 else { return }
-            guard sensorHold.ready(depth:lidar.snapshot.timestamp.timeIntervalSince1970,
-                                   uwb:updated?.timeIntervalSince1970 ?? 0) else { return }
+            if approachDecision.action == "reverse" {
+                // This is an escape from a front obstacle, not a claim that the front is clear.
+                guard let began = sensorHold.began, lidar.snapshot.timestamp.timeIntervalSince1970 > began,
+                      (updated?.timeIntervalSince1970 ?? 0) > began else { return }
+            } else {
+                guard sensorHold.ready(depth:lidar.snapshot.timestamp.timeIntervalSince1970,
+                                       uwb:updated?.timeIntervalSince1970 ?? 0) else { return }
+            }
             sensorHold.reset(); approachAckUptime = ProcessInfo.processInfo.systemUptime
             approachNote = "Guided approach active · readings recovered."
         }
@@ -204,6 +213,9 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private func issueMotion(_ command: MotionCommand, interrupt: Bool) {
         motion = command
         activeAction = command.action
+        if isRobot && approachActive && command.action == "reverse", let position = lidar.snapshot.robotPosition {
+            avoidanceNavigator.beginReverseCommand(now:ProcessInfo.processInfo.systemUptime,position:position)
+        }
         if approachActive { approachNote = "Sending \(command.action) · waiting for Pi" }
         sendControl(force:interrupt)
     }
@@ -311,7 +323,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     }
     func sendIntent(action: String, targetMeters: Int, speed: Int = 100) {
         if action == "stop" { stopMotion(); return }
-        beginMotion(action: action, targetMeters: targetMeters, speed: speed)
+        beginMotion(action: action, targetMeters: targetMeters, speed: 100)
     }
     func beginMotion(action: String, targetMeters: Int = 2, speed: Int = 100) {
         guard !remoteApproach else { driveError = "Guided approach is active on the can phone. Stop it before manual driving."; return }
@@ -325,7 +337,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         guard activeAction != action else { return }
         driveError = nil
         let command = MotionCommand(client_id: deviceID, sequence: 0, sent_at: 0,
-                               action: action, targetMeters: targetMeters, speed: speed)
+                               action: action, targetMeters: targetMeters, speed: 100)
         issueMotion(command,interrupt:true)
     }
     func stopMotion() {
@@ -335,6 +347,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         lidar.updateAvoidanceTarget(nil)
         if approachActive {
             approachActive = false
+            lastGuidanceStop = "Stopped by user"
             approachNote = "Stopped · press Start to try again."
             sendMessage(kind: "approach", value: false)
         }
@@ -474,6 +487,13 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
     private var peerToken: NIDiscoveryToken?
+    private var configuredPeerToken: NIDiscoveryToken?
+    private var invitedPeer: MCPeerID?
+    private var rangingSuspended = false
+    private var trackingRetry = TrackingRetryBudget()
+    private var trackingRecoveryWork: DispatchWorkItem?
+    private var discoveryRecoveryWork: DispatchWorkItem?
+    private var stableHeadingSince: TimeInterval?
     private var role = "Robot"
     private var endpoint: URL?
     private var apiToken = ""
@@ -489,6 +509,30 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     override init() {
         super.init()
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-heading-gap") {
+            // Install after launch scene transitions, like a foreground Connect tap.
+            DispatchQueue.main.asyncAfter(deadline:.now()+1) { [weak self] in
+                guard let self else { return }
+                self.role = "Robot"; self.running = true; self.connected = true
+                self.applyNearbyReading(distance:2,direction:nil,horizontalAngle:0.2)
+                self.applyNearbyReading(distance:2,direction:nil,horizontalAngle:nil)
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-peer-link-loss") {
+            DispatchQueue.main.asyncAfter(deadline:.now()+1) { [weak self] in
+                guard let self else { return }
+                self.role = "Robot"; self.running = true; self.connected = true
+                self.peerConnectionLost()
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-emergency-stop") {
+            DispatchQueue.main.asyncAfter(deadline:.now()+1) { [weak self] in
+                guard let self else { return }
+                self.role = "User"; self.running = true; self.approachPreviewing = true
+                self.approachActive = true
+                self.endApproach("EMERGENCY STOP · measured obstacle 4.0 cm away (5 cm limit)")
+            }
+        }
         // Regression harness: exercise real failed requests without requiring UWB hardware.
         if ProcessInfo.processInfo.arguments.contains("--ui-test-offline-pi") {
             role = "Robot"
@@ -535,11 +579,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         UIApplication.shared.isIdleTimerDisabled = true
         piUnavailable = false; nextUploadAt = .distantPast; uploadBackoff = 0.25
         delivery = endpoint == nil ? "Phone-only test" : "Connecting to Pi…"
-        let ranging = NISession()
-        ranging.delegate = self
-        ranging.delegateQueue = .main
-        ni = ranging
-        sharedARAttached = false
+        createRangingSession()
         let localPeer = MCPeerID(displayName: "\(role)-\(UUID().uuidString.prefix(6))")
         let session = MCSession(peer: localPeer, securityIdentity: nil, encryptionPreference: .required)
         session.delegate = self
@@ -563,6 +603,10 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     }
 
     func stop() {
+        trackingRecoveryWork?.cancel(); trackingRecoveryWork = nil
+        discoveryRecoveryWork?.cancel(); discoveryRecoveryWork = nil
+        trackingRetry.reset(); stableHeadingSince = nil
+        configuredPeerToken = nil; invitedPeer = nil; rangingSuspended = false
         if isRobot { endApproachPreview() }
         stopMotion()
         controlTimer?.invalidate(); controlTimer = nil
@@ -606,19 +650,78 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
             enqueuePeerData(envelope, session: session)
         } catch { status = "Token send failed: \(error.localizedDescription)" }
     }
-    private func range() {
-        guard let token = peerToken, let ni else { return }
+    private func createRangingSession() {
+        let ranging = NISession()
+        ranging.delegate = self; ranging.delegateQueue = .main
+        ni = ranging
+        configuredPeerToken = nil; sharedARAttached = false; rangingSuspended = false
+    }
+    private func restartDiscovery() {
+        guard running, mpc != nil, !connected else { return }
+        invitedPeer = nil
+        if isRobot { advertiser?.stopAdvertisingPeer(); advertiser?.startAdvertisingPeer() }
+        else { browser?.stopBrowsingForPeers(); browser?.startBrowsingForPeers() }
+    }
+    private func peerConnectionLost() {
+        guard running else { return }
+        if approachActive { endApproach("Stopped · phone connection lost; reconnecting") }
+        else { stopMotion() }
+        connected = false; clear()
+        ni?.pause(); configuredPeerToken = nil; peerToken = nil
+        remoteApproach = false; approachActive = false; remoteInspection = false; remotePaused = false
+        remoteGuidanceUpdated = nil; remoteGuidanceSequence = -1
+        guidancePending = false; pendingGuidanceID = nil
+        if !isRobot { approachPreviewing = false }
+        status = "Phone link lost · searching automatically"
+        convergence = "Waiting for phone link · camera session retained"
+        restartDiscovery()
+    }
+    func retryTracking() {
+        guard running else { return }
+        stopMotion(); clear(); trackingRetry.reset(); stableHeadingSince = nil
+        trackingRecoveryWork?.cancel(); trackingRecoveryWork = nil
+        guard connected else { restartDiscovery(); status = "Searching for other phone"; return }
+        guard NISession.deviceCapabilities.supportsPreciseDistanceMeasurement else { return }
+        ni?.delegate = nil; ni?.invalidate()
+        createRangingSession(); sendToken(); sendMessage(kind:"tokenRequest",value:true); range()
+        status = "Retrying tracking · motors stopped"
+    }
+    private func recoverInvalidRanging(_ error: Error) {
+        stopMotion(); clear()
+        ni?.delegate = nil; ni = nil; configuredPeerToken = nil; sharedARAttached = false
+        let code = (error as NSError).code
+        let transient = (error as NSError).domain == NIErrorDomain &&
+            [NIError.Code.sessionFailed.rawValue,NIError.Code.resourceUsageTimeout.rawValue].contains(code)
+        guard transient, let delay = trackingRetry.nextDelay() else {
+            status = "Tracking unavailable · \(error.localizedDescription). Check permissions or tap Retry tracking."
+            return
+        }
+        let current = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.running, self.generation == current else { return }
+            self.trackingRecoveryWork = nil
+            self.createRangingSession(); self.sendToken(); self.sendMessage(kind:"tokenRequest",value:true); self.range()
+            self.status = "Recovering tracking · motors remain stopped"
+        }
+        trackingRecoveryWork?.cancel(); trackingRecoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline:.now()+delay,execute:work)
+        status = "Tracking interrupted · automatic retry \(trackingRetry.attempts)/3"
+    }
+    private func range(force: Bool = false) {
+        guard running, connected, !rangingSuspended, let token = peerToken, let ni else { return }
+        guard force || configuredPeerToken != token else { return }
         let config = NINearbyPeerConfiguration(peerToken: token)
         config.isCameraAssistanceEnabled = cameraAssistance && NISession.deviceCapabilities.supportsCameraAssistance
         config.isExtendedDistanceMeasurementEnabled = NISession.deviceCapabilities.supportsExtendedDistanceMeasurement && token.deviceCapabilities.supportsExtendedDistanceMeasurement
-        convergence = config.isCameraAssistanceEnabled ? "Waiting for camera-assisted calibration" : "Camera assistance off"
+        convergence = config.isCameraAssistanceEnabled ? "Acquiring heading · camera session retained when available" : "Camera assistance off"
         if isRobot && config.isCameraAssistanceEnabled && !sharedARAttached {
             lidar.acquireForUWB()
             ni.setARSession(lidar.session)
             sharedARAttached = true
         }
+        configuredPeerToken = token
         ni.run(config)
-        status = "Ranging · keep phones oriented toward each other"
+        status = "Phones connected · acquiring tracking"
     }
 
     private func upload() {
@@ -672,48 +775,68 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
 
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
         guard session === ni, let object = nearbyObjects.first(where: { $0.discoveryToken == peerToken }) else { return }
-        distance = object.distance; direction = object.direction; horizontalAngle = object.horizontalAngle
+        applyNearbyReading(distance:object.distance,direction:object.direction,horizontalAngle:object.horizontalAngle)
+    }
+    private func applyNearbyReading(distance: Float?, direction: SIMD3<Float>?, horizontalAngle: Float?) {
+        self.distance = distance; self.direction = direction; self.horizontalAngle = horizontalAngle
         if isRobot && sharedARAttached {
-            lidar.updatePlayer(distance: object.distance, horizontalAngle: object.horizontalAngle, direction: object.direction)
+            lidar.updatePlayer(distance:distance,horizontalAngle:horizontalAngle,direction:direction)
         } else { lidar.clearPlayer() }
         updated = (distance != nil || direction != nil || horizontalAngle != nil) ? Date() : nil
-        status = "Ranging"
+        if bearing(at:.now) != nil {
+            status = "Ranging · heading live"
+            let uptime = ProcessInfo.processInfo.systemUptime
+            if stableHeadingSince == nil { stableHeadingSince = uptime }
+            if uptime-(stableHeadingSince ?? uptime) >= 2 { trackingRetry.reset() }
+        } else {
+            stableHeadingSince = nil
+            status = "Phones connected · heading temporarily unavailable"
+            if convergence == "Ready" { convergence = "Waiting for heading recovery · no reconnect needed" }
+        }
     }
     func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
         guard session === ni else { return }
         clear()
-        if reason == .timeout { range() }
-        else { stop(); status = "Peer session ended. Start both phones again." }
+        stableHeadingSince = nil
+        if reason == .timeout {
+            // Resume the same NI + AR sessions; do not tear down the phone link.
+            range(force:true)
+        } else {
+            stopMotion(); peerToken = nil; configuredPeerToken = nil
+            sendMessage(kind:"tokenRequest",value:true)
+            status = "Peer ranging restarted · waiting for its token"
+        }
     }
     func session(_ session: NISession, didUpdateAlgorithmConvergence value: NIAlgorithmConvergence, for object: NINearbyObject?) {
         guard session === ni else { return }
         switch value.status {
         case .converged: convergence = "Ready"
-        case .notConverged(let reasons): convergence = "Move phone to calibrate · " + reasons.map { String(describing: $0) }.joined(separator: ", ")
+        case .notConverged(let reasons): convergence = "Heading initializing/recovering · " + reasons.map { String(describing: $0) }.joined(separator: ", ")
         default: convergence = "Finding visual detail"
         }
     }
     func sessionWasSuspended(_ session: NISession) {
-        guard session === ni else { return }; clear(); status = "Ranging suspended"
+        guard session === ni else { return }; rangingSuspended = true; clear(); stopMotion(); status = "Tracking suspended · waiting to resume"
     }
     func sessionSuspensionEnded(_ session: NISession) {
-        guard session === ni else { return }; range()
+        guard session === ni else { return }; rangingSuspended = false; range(force:true)
     }
     func session(_ session: NISession, didInvalidateWith error: Error) {
-        guard session === ni else { return }; stop(); status = "UWB: \(error.localizedDescription). Restart both phones."
+        guard session === ni else { return }; recoverInvalidRanging(error)
     }
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         DispatchQueue.main.async { [weak self] in
             guard let self, session === self.mpc else { return }
             if state == .connected {
-                self.connected = true
+                self.connected = true; self.invitedPeer = nil
+                self.discoveryRecoveryWork?.cancel(); self.discoveryRecoveryWork = nil
                 self.advertiser?.stopAdvertisingPeer(); self.browser?.stopBrowsingForPeers()
                 self.peerName = peerID.displayName; self.sendToken()
                 if self.inspectionActive { self.sendMessage(kind: "inspection", value: true) }
                 self.publishGuidance()
                 if !self.isRobot, let round = self.localRound { self.publishRound(round) }
             }
-            else if state == .notConnected { self.stop(); self.status = "Disconnected. Start both phones again." }
+            else if state == .notConnected { self.peerConnectionLost() }
             else { self.status = "Connecting" }
         }
     }
@@ -726,6 +849,8 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                 case "token":
                     guard let token = try NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: message.payload) else { return }
                     self.peerToken = token; self.range()
+                case "tokenRequest":
+                    self.sendToken()
                 case "round" where self.isRobot:
                     self.remoteRound = try JSONDecoder().decode(RoundState.self, from: message.payload)
                 case "inspection" where !self.isRobot:
@@ -741,6 +866,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                     self.remoteGuidanceSequence = state.sequence; self.remoteGuidanceUpdated = .now
                     self.remoteApproach = state.active; self.approachActive = state.active
                     self.approachPreviewing = state.previewing; self.approachDecision = state.decision; self.remotePaused = state.paused
+                    self.lastGuidanceStop = state.stopReason
                     self.remoteCanPreview = state.canPreview; self.remoteCanStart = state.canStart; self.remoteFloor = state.floor
                     if let id = self.pendingGuidanceID, id == state.requestID {
                         self.pendingGuidanceID = nil; self.guidancePending = false
@@ -768,15 +894,34 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     }
     func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, browser === self.browser, let session = self.mpc, session.connectedPeers.isEmpty else { return }
+            guard let self, browser === self.browser, let session = self.mpc, session.connectedPeers.isEmpty, self.invitedPeer == nil else { return }
+            self.invitedPeer = peerID
             browser.invitePeer(peerID, to: session, withContext: nil, timeout: 15)
         }
     }
+    private func scheduleDiscoveryRecovery(_ error: Error) {
+        guard running else { return }
+        stopMotion(); status = "Discovery interrupted · retrying: \(error.localizedDescription)"
+        guard discoveryRecoveryWork == nil else { return }
+        let current = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.running, self.generation == current else { return }
+            self.discoveryRecoveryWork = nil; self.restartDiscovery()
+        }
+        discoveryRecoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline:.now()+2,execute:work)
+    }
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        DispatchQueue.main.async { [weak self] in self?.stop(); self?.status = "Discovery: \(error.localizedDescription)" }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, advertiser === self.advertiser else { return }
+            self.scheduleDiscoveryRecovery(error)
+        }
     }
     func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-        DispatchQueue.main.async { [weak self] in self?.stop(); self?.status = "Discovery: \(error.localizedDescription)" }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, browser === self.browser else { return }
+            self.scheduleDiscoveryRecovery(error)
+        }
     }
     func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {}
     func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {}

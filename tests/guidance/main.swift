@@ -91,3 +91,19 @@ assert(!MotionDispatchPolicy.interrupts(current:turnLeft,desired:slowerLeft), "S
 var correctedForward = movingForward; correctedForward.rightPercent = 85
 assert(!MotionDispatchPolicy.interrupts(current:movingForward,desired:correctedForward))
 print("Shared manual/guided dispatch: immediate direction handoff and serialized speed/trim changes passed")
+
+var trackingRetries = TrackingRetryBudget()
+assert(trackingRetries.nextDelay() == 0.5)
+assert(trackingRetries.nextDelay() == 1)
+assert(trackingRetries.nextDelay() == 2)
+assert(trackingRetries.nextDelay() == nil, "Invalid sessions cannot loop indefinitely")
+trackingRetries.reset()
+assert(trackingRetries.attempts == 0 && trackingRetries.nextDelay() == 0.5)
+let fullTurn = MotionCommand(decision:ApproachDecision(action:"right",speed:100),clientID:"can",target:1)
+assert(fullTurn.action == "right" && fullTurn.speed == 100)
+print("Tracking retry budget and full-power pivot encoding passed")
+
+let stopStatus = GuidanceStatus(stopReason:"EMERGENCY STOP · measured obstacle 4 cm away (5 cm limit)",sequence:90,requestID:nil,previewing:true,active:false,paused:false,target:1,decision:ApproachDecision(),note:"Start again after clearing it",canPreview:true,canStart:false,floor:"Measured")
+let decodedStop = try decoder.decode(GuidanceStatus.self,from:encoder.encode(stopStatus))
+assert(decodedStop.stopReason == stopStatus.stopReason, "Player must receive the exact persistent emergency-stop reason")
+print("Persistent player emergency-stop message round trip passed")

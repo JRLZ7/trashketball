@@ -11,9 +11,10 @@ struct ContentView: View {
     @StateObject private var game = GameStore()
     @AppStorage("role") private var role = "User"
     @AppStorage("receiver") private var receiver = ""
-    @AppStorage("driveSpeedV3") private var driveSpeed = 100
+    private let driveSpeed = 100
     private let token = "12345"
     @State private var selectedTab = 0
+    @State private var reconnectAfterBackground = false
     @Environment(\.scenePhase) private var scenePhase
     private let clock = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
     private let waitingRound = RoundState()
@@ -39,7 +40,13 @@ struct ContentView: View {
         .onChange(of: game.round) { _, value in if !isRobot { model.publishRound(value) } }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { model.stopMotion() }
-            if phase == .background { model.exitInspection(); model.stop() }
+            if phase == .background {
+                reconnectAfterBackground = model.running
+                model.exitInspection(); model.stop()
+            } else if phase == .active && reconnectAfterBackground {
+                reconnectAfterBackground = false
+                model.start(role:role,receiver:receiver,token:token)
+            }
         }
     }
 
@@ -172,12 +179,8 @@ struct ContentView: View {
                         }
                         if !isRobot {
                             Text("Hold an arrow to drive. Release to stop.").font(.footnote).foregroundStyle(.secondary)
-                            HStack {
-                                Text("Speed").font(.subheadline)
-                                Slider(value: Binding(get: { Double(driveSpeed) }, set: { driveSpeed = Int($0) }), in: 20...100, step: 5)
-                                    .disabled(model.activeAction != nil)
-                                Text("\(driveSpeed)%").font(.subheadline.monospacedDigit()).frame(width: 40)
-                            }
+                            LabeledContent("Movement speed",value:"100% · driver capped")
+                                .font(.subheadline)
                             VStack(spacing: 10) {
                                 holdButton("Forward", symbol: "arrow.up", action: "forward", enabled: ready)
                                 HStack(spacing: 12) {
@@ -208,7 +211,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Tracking guidance", systemImage: "viewfinder").font(.headline)
                     Text(model.convergence).font(.subheadline)
-                    Text("If movement is insufficient, gently translate and sweep the phone in a well-lit space. Tracking may need calibration again after reconnecting.")
+                    Text("If Apple reports insufficientMovement, gently translate and sweep the phone in a well-lit space. A brief heading gap does not disconnect the phones. The app retries recoverable session failures automatically; movement waits for fresh heading.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.card()
             }.padding(20)
@@ -236,6 +239,10 @@ struct ContentView: View {
                 }
             }
             Text(model.approachDecision.message).font(.headline)
+            if let reason = model.lastGuidanceStop {
+                Label(reason,systemImage:"exclamationmark.octagon.fill")
+                    .font(.headline).foregroundStyle(.red)
+            }
             if isRobot && model.approachPreviewing {
                 AvoidanceFanView(scan:model.lidar.snapshot.avoidance,selectedDegrees:model.approachDecision.selectedLaneDegrees)
                     .frame(height:160)
@@ -286,7 +293,7 @@ struct ContentView: View {
                 Button("Stop", role: .destructive) { model.stopMotion() }
                     .buttonStyle(.bordered).disabled(!model.running)
             }
-            Text("Preview works without the Pi. Brief missing measurements pause the motors; stable readings can resume within 2 s. A blocked/unobserved route waits stopped for up to 8 s for confirmed clearance. Close obstacles and connection failures require Start again. Automatic reversing is unavailable without rear clearance sensing. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Forward commands use up to 100% with small left/right heading corrections; pivots taper to 35–55%. Pi motor trim and the 150/255 PWM cap still apply. Side/rear blind spots remain; keep space around the can for pivots.")
+            Text("Preview works without the Pi. Missing heading pauses the motors for up to 8 s while tracking recovers; missing LiDAR gets a 2 s pause. Stable fresh readings are required to resume. A blocked/unobserved route waits stopped for up to 8 s for confirmed clearance. A measured obstacle within 5 cm triggers an explicit emergency stop. A front obstacle triggers one automatic backup burst, capped at about 15 cm or 0.6 s, followed by an observed side detour and return toward the player. These are command limits; momentum and network delay can increase actual travel. Rear clearance is not sensed; keep a spotter behind the can. Connection failures still require Start again. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. All movement requests, including pivots, use 100%. Pi motor trim and the 150/255 PWM cap still apply. Side/rear blind spots remain; keep space around the can for pivots.")
                 .font(.caption).foregroundStyle(.secondary)
         }.card()
     }
@@ -304,7 +311,7 @@ struct ContentView: View {
         Form {
             Section {
                 Text("Two phones. One moving basket.").font(.title2.weight(.black))
-                Text("Use the same app on both phones. Pick a role, connect, then calibrate tracking.").foregroundStyle(.secondary)
+                Text("Use the same app on both phones. Pick a role and connect. Tracking recovers automatically when possible; initial camera-assisted heading may need gentle movement.").foregroundStyle(.secondary)
             }
             Section("1 · Choose this phone’s role") {
                 Picker("Role", selection: $role) { Text("Player").tag("User"); Text("On the can").tag("Robot") }
@@ -323,6 +330,8 @@ struct ContentView: View {
                     if model.running { model.stop() }
                     else { model.publishRound(game.round); model.start(role: role, receiver: receiver, token: token) }
                 }
+                Button("Retry tracking",systemImage:"arrow.clockwise") { model.retryTracking() }
+                    .disabled(!model.running)
                 LabeledContent("Session", value: model.status)
                 LabeledContent("Other phone", value: model.peerName)
                 LabeledContent("Pi telemetry", value: model.delivery)

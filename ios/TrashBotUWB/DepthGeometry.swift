@@ -308,6 +308,7 @@ struct AvoidanceLane {
 struct AvoidanceScan {
     var lanes: [AvoidanceLane] = []
     var nearestRadialObstacle: Float?
+    var nearestFrontObstacle: Float?
     func nearestLane(to angle: Float) -> AvoidanceLane? {
         lanes.min { abs($0.angle-angle) < abs($1.angle-angle) }
     }
@@ -339,7 +340,7 @@ enum AvoidanceGeometry {
             var corridor = DepthGeometry.estimate(samples:samples,origin:origin,
                 forward:heading,floorY:floorY,width:width,lookahead:1.4)
             // Keep the existing observed-floor core, but reject known obstacles within
-            // 35 cm of a candidate centerline, matching the near-body stop radius.
+            // 35 cm of a candidate centerline for bucket clearance (separate from the emergency threshold).
             let inflated = DepthGeometry.estimate(samples:obstacles,origin:origin,
                 forward:heading,floorY:floorY,width:max(width,0.70),lookahead:1.4)
             corridor.nearestObstacle = inflated.nearestObstacle
@@ -347,6 +348,7 @@ enum AvoidanceGeometry {
         }
         // Independent near-body check across all visible depth, not just the chosen lane.
         var hits: [MapCellKey:(count:Int, distance:Float)] = [:]
+        var frontHits: [MapCellKey:(count:Int, distance:Float)] = [:]
         for s in obstacles {
             let p = s.world, height = p.y-floorY
             guard p.x.isFinite, p.y.isFinite, p.z.isFinite, height >= 0.08, height <= 1.5 else { continue }
@@ -355,8 +357,16 @@ enum AvoidanceGeometry {
             let key = MapCellKey(x:Int((p.x/0.1).rounded(.down)),z:Int((p.z/0.1).rounded(.down)))
             let old = hits[key] ?? (0,d)
             hits[key] = (old.count+1,min(old.distance,d))
+            let relative = p-origin
+            let along = simd_dot(relative,h), across = simd_dot(relative,right)
+            if along > 0, abs(across) <= width/2 {
+                let previous = frontHits[key] ?? (0,along)
+                frontHits[key] = (previous.count+1,min(previous.distance,along))
+            }
         }
-        return AvoidanceScan(lanes:lanes,nearestRadialObstacle:hits.values.filter { $0.count >= 3 }.map(\.distance).min())
+        return AvoidanceScan(lanes:lanes,
+            nearestRadialObstacle:hits.values.filter { $0.count >= 3 }.map(\.distance).min(),
+            nearestFrontObstacle:frontHits.values.filter { $0.count >= 3 }.map(\.distance).min())
     }
 }
 
@@ -368,6 +378,13 @@ struct LocalAvoidanceNavigator {
         var origin: SIMD2<Float>
         var started: TimeInterval
     }
+    private struct Retreat {
+        var origin: SIMD2<Float>
+        var started: TimeInterval?
+    }
+    private var retreat: Retreat?
+    private var awaitingSide = false
+    private var retreatUsed = false
     private var detour: Detour?
     private var preferredSide: Float?
     private var referenceWorld: UUID?
@@ -378,6 +395,12 @@ struct LocalAvoidanceNavigator {
     private var yawRate: Float = 0
     var waypoint: SIMD2<Float>? { detour?.waypoint }
     mutating func reset() { self = LocalAvoidanceNavigator() }
+    // Time/distance limits begin when the motor command is actually dispatched,
+    // not while previewing or waiting for a confirmed Stop.
+    mutating func beginReverseCommand(now: TimeInterval, position: SIMD2<Float>) {
+        guard var active = retreat, active.started == nil else { return }
+        active.started = now; active.origin = position; retreat = active
+    }
 
     mutating func evaluate(distance: Float?, angle: Float?, uwbAge: TimeInterval?, connected: Bool,
                            depthAge: TimeInterval, trackingNormal: Bool, floorReady: Bool,
@@ -385,11 +408,20 @@ struct LocalAvoidanceNavigator {
                            yaw: Float?, position: SIMD2<Float>?, world: UUID, frameTime: TimeInterval,
                            now: TimeInterval, targetMeters: Int, previousAction: String?, driving: Bool) -> ApproachDecision {
         func stop(_ text: String, sensorWait: Bool = false, timeout: TimeInterval = 2) -> ApproachDecision { ApproachDecision(recoverableSensorWait:sensorWait,recoveryTimeout:timeout,message:text) }
+        // A fresh measured emergency takes precedence over arrival or missing UWB.
+        if depthAge.isFinite, depthAge >= 0, depthAge < 0.4, trackingNormal, floorReady {
+            if let near = scan.nearestRadialObstacle {
+                guard near.isFinite, near >= 0 else { return stop("EMERGENCY STOP · invalid obstacle-distance reading") }
+                if near <= 0.05 {
+                    return stop(String(format:"EMERGENCY STOP · measured obstacle %.1f cm away (5 cm limit). Press Start after clearing it.",near*100))
+                }
+            }
+        }
         guard connected, let age = uwbAge, age.isFinite, age >= 0, age < 0.25,
               let distance, distance.isFinite, distance > 0, distance <= 30,
               let angle, angle.isFinite, abs(angle) <= .pi else {
             detour = nil
-            return stop("Stop · UWB distance or bearing unavailable/stale", sensorWait:true)
+            return stop("Stop · UWB distance or bearing unavailable/stale", sensorWait:true, timeout:8)
         }
         guard (1...3).contains(targetMeters) else { return stop("Stop · invalid stopping distance") }
         if distance <= Float(targetMeters)+0.15 { detour = nil; return stop("Arrived · at selected phone-to-phone distance") }
@@ -411,14 +443,41 @@ struct LocalAvoidanceNavigator {
             } else { yawRate = 0 }
             lastYaw = yaw; lastYawTime = frameTime
         }
-        if let near = scan.nearestRadialObstacle, !near.isFinite || near < 0.35 {
-            return stop("Stop · obstacle within 35 cm; too close to pivot")
-        }
         guard !scan.lanes.isEmpty else { return stop("Stop · waiting for left/right clearance scan", sensorWait:true) }
         let forward = SIMD2(sin(yaw),-cos(yaw)), right = SIMD2(cos(yaw),sin(yaw))
         let forwardOpen = scan.nearestLane(to:0)?.isOpen == true
         let goalLane = scan.nearestLane(to:angle)
         let goalOpen = goalLane.map { $0.isOpen && abs($0.angle-angle) <= .pi/12 } ?? false
+
+        let frontDistance = scan.nearestFrontObstacle
+        let frontBlocked = frontDistance.map { $0.isFinite && $0 > 0 && $0 <= 0.45 } ?? false
+        if frontBlocked && !retreatUsed && retreat == nil {
+            retreat = Retreat(origin:position,started:nil)
+            detour = nil; preferredSide = nil; awaitingSide = false
+        }
+        if let active = retreat {
+            if let started = active.started {
+                let moved = simd_distance(active.origin,position)
+                let sideOpen = Self.bestSide(scan:scan,angle:angle) != nil
+                if moved >= 0.15 || now-started >= 0.6 || (moved >= 0.05 && sideOpen) {
+                    retreat = nil; retreatUsed = true; awaitingSide = true
+                    return stop("Recovery · backup ended; motors stopped while checking sides",sensorWait:true,timeout:8)
+                }
+            }
+            return ApproachDecision(action:"reverse",speed:100,
+                message:"Obstacle immediately ahead · back up briefly, then choose a clear side (rear unchecked)",avoiding:true)
+        }
+        if awaitingSide {
+            guard let chosen = Self.bestSide(scan:scan,angle:angle) else {
+                return stop("Recovery · backup limit reached; waiting stopped for an observed clear side",sensorWait:true,timeout:8)
+            }
+            awaitingSide = false
+            let direction = SIMD2(sin(yaw+chosen.angle),-cos(yaw+chosen.angle))
+            detour = Detour(waypoint:position+direction*0.6,origin:position,started:now)
+            preferredSide = chosen.angle > 0 ? 1 : -1
+            clearFrames = 0; lastClearFrame = frameTime
+            return Self.steer(angle:chosen.angle,lane:chosen,avoiding:true,previousAction:previousAction,forwardOpen:forwardOpen,yawRate:yawRate)
+        }
 
         if let active = detour {
             if driving && now-active.started >= 8 { return stop("Stop · detour timed out; check wheels and tracking") }
@@ -431,6 +490,7 @@ struct LocalAvoidanceNavigator {
             }
             if simd_length(delta) <= 0.18 || clearFrames >= 3 {
                 detour = nil; clearFrames = 0
+                if !frontBlocked { retreatUsed = false }
             } else {
                 let remaining = atan2(simd_dot(delta,right),simd_dot(delta,forward))
                 guard let lane = scan.nearestLane(to:remaining), lane.isOpen,
@@ -459,7 +519,7 @@ struct LocalAvoidanceNavigator {
         }) else {
             if let first = fallbackCorridor.firstObservedFloorDistance, first >= 0.4,
                fallbackCorridor.observedFreeDistance < 0.65 {
-                return stop(String(format:"Stop · floor visible only from %.2f m; tilt camera farther down",first))
+                return stop(String(format:"Wait · nearby floor unobserved (first visible %.2f m); motors stopped",first),sensorWait:true,timeout:8)
             }
             let hasObstacle = scan.lanes.contains { $0.corridor.nearestObstacle != nil }
             return stop(hasObstacle ? "Wait · routes blocked or unobserved; motors stopped" :
@@ -471,6 +531,14 @@ struct LocalAvoidanceNavigator {
         clearFrames = 0; lastClearFrame = frameTime
         return Self.steer(angle:chosen.angle,lane:chosen,avoiding:true,previousAction:previousAction,forwardOpen:forwardOpen,yawRate:yawRate)
     }
+    private static func bestSide(scan: AvoidanceScan, angle: Float) -> AvoidanceLane? {
+        scan.lanes.filter { $0.isOpen && abs($0.angle) >= .pi/12 }.min {
+            let a = abs($0.angle-angle)+0.12*abs($0.angle)-0.08*min($0.corridor.observedFreeDistance,1.4)
+            let b = abs($1.angle-angle)+0.12*abs($1.angle)-0.08*min($1.corridor.observedFreeDistance,1.4)
+            if abs(a-b) < 0.0001 { return $0.angle < $1.angle }
+            return a < b
+        }
+    }
     private static func steer(angle: Float, lane: AvoidanceLane, avoiding: Bool, previousAction: String?, forwardOpen: Bool, yawRate: Float) -> ApproachDecision {
         let turning = (previousAction == "left" && angle < 0) || (previousAction == "right" && angle > 0)
         let degrees = angle*180/Float.pi
@@ -479,18 +547,12 @@ struct LocalAvoidanceNavigator {
         if abs(angle) > (turning ? settleAngle : 0.22) || (!forwardOpen && abs(angle) > 0.02) {
             let side = angle > 0 ? "right" : "left"
             let text = String(format:"%@turn %@ %.0f°",avoiding ? "Avoid obstacle · " : "",side,abs(degrees))
-            // Slow pivots, taper near alignment, and damp rotation already toward the target.
-            let toward = max(0,yawRate*(angle > 0 ? 1 : -1))
-            let raw = max(35,min(55,35+abs(degrees)*0.4-toward*8))
-            let speed = Int((raw/5).rounded())*5
-            return ApproachDecision(action:angle > 0 ? "right" : "left",speed:speed,message:text,
+            return ApproachDecision(action:angle > 0 ? "right" : "left",speed:100,message:text,
                 turnDegrees:degrees,selectedLaneDegrees:lane.angle*180/Float.pi,avoiding:avoiding)
         }
         guard forwardOpen else { return ApproachDecision(message:"Stop · current forward lane is not clear") }
-        // Gentle PD heading correction while progressing, instead of repeated full-power pivots.
-        // Positive error means turn right: slow the right wheel. Never boost above the cap.
-        let trim = Int((max(-25,min(25,angle*100-yawRate*8))/5).rounded())*5
-        return ApproachDecision(leftPercent:100-max(0,-trim),rightPercent:100-max(0,trim),action:"forward",speed:100,
+        // All movement requests use 100%; steering changes direction, not power.
+        return ApproachDecision(action:"forward",speed:100,
             message:avoiding ? "Detour forward · rechecking clearance" : "Forward · path toward player clear",
             turnDegrees:0,selectedLaneDegrees:lane.angle*180/Float.pi,avoiding:avoiding)
     }
