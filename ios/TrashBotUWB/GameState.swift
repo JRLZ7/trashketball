@@ -44,7 +44,7 @@ final class GameStore: ObservableObject {
     }
     func record(made: Bool, now: Date = .now) {
         guard round.isActive(at: now), round.shots.count < 256 else { return }
-        round.shots.append(Shot(made: made, points: made ? round.targetMeters : 0))
+        round.shots.append(Shot(made: made, points: made ? 1 : 0))
         saveBest()
     }
     func applyBeam(_ status: BeamStatus) {
@@ -53,7 +53,7 @@ final class GameStore: ObservableObject {
         let additions = status.events.filter { event in
             event.roundID == round.id && event.timestamp.isFinite &&
             event.timestamp >= start.timeIntervalSince1970 && event.timestamp < end.timeIntervalSince1970 &&
-            event.points == round.targetMeters && known.insert(event.id).inserted
+            event.points == 1 && known.insert(event.id).inserted
         }.prefix(max(0, 256 - round.shots.count))
         guard !additions.isEmpty else { return }
         round.shots.append(contentsOf: additions.map { Shot(id: $0.id, made: true, points: $0.points) })

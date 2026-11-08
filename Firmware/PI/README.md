@@ -86,6 +86,6 @@ That example builds a `Drive` on the harness pins above (motor 1 on the left cha
 
 ## App scoring and speed
 
-The root app bridge (`python3 pi/server.py --drive` from the repository root) reads BCM GPIO 24 with pull-up, defaults to LOW = broken, and debounces basket events during timed rounds. Use `--beam-active-high` if your module's output is inverted, `--beam` for scoring-only operation, or `--no-beam` for motor-only testing. Check Play's clear/blocked indicator before a round.
+The root app bridge (`python3 pi/server.py` from the repository root) reads BCM GPIO 24 with pull-up, defaults to LOW = broken, and debounces basket events during timed rounds. Startup enables motors, beam scoring and Summon. Set `BEAM_ACTIVE_HIGH = True` in `pi/server.py` if your module's output is inverted, `ENABLE_MOTORS = False` for scoring-only operation, or `ENABLE_BEAM = False` for motor-only testing. The API token is `12345`, preset in the app and server; no flags are needed. Play shows automatic scoring readiness and counts one point per detected basket; misses do not change the count.
 
 The app now defaults to 80% command speed, allows 100% manual command, and caps autonomous forward command at 80%. These percentages are still scaled by this driver's `130/255` PWM cap. No motor pin assignments or MAX_DUTY values were changed.

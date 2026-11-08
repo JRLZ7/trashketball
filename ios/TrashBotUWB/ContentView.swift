@@ -12,7 +12,7 @@ struct ContentView: View {
     @AppStorage("role") private var role = "User"
     @AppStorage("receiver") private var receiver = ""
     @AppStorage("driveSpeedV2") private var driveSpeed = 80
-    @State private var token = ""
+    private let token = "12345"
     @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
     private let clock = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
@@ -59,7 +59,7 @@ struct ContentView: View {
                         }
                         Text("\(round.score)").font(.system(size: 112, weight: .black, design: .rounded)).monospacedDigit()
                             .contentTransition(.numericText())
-                        Text("POINTS").font(.caption.weight(.heavy)).tracking(4).foregroundStyle(.secondary)
+                        Text("MAKES").font(.caption.weight(.heavy)).tracking(4).foregroundStyle(.secondary)
                         HStack(spacing: 0) {
                             stat("BASKETS", "\(round.baskets)")
                             stat("SCORING", "IR beam")
@@ -67,7 +67,7 @@ struct ContentView: View {
                         }
                         if !isRobot {
                             if active {
-                                Label("Baskets are counted by the beam sensor", systemImage: "sensor.fill")
+                                Label("Make it. We’ll count it.", systemImage: "basketball.fill")
                                     .font(.subheadline).foregroundStyle(.secondary)
                                 Button("End round") { game.end() }.font(.subheadline)
                             } else {
@@ -84,8 +84,8 @@ struct ContentView: View {
                 TimelineView(.periodic(from: .now, by: 0.25)) { context in
                     let live = model.beamIsLive(at: context.date)
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("Beam-break scoring · GPIO 24", systemImage: "sensor.fill").font(.headline)
-                        Text(!live ? "Scoring offline · connect to the Pi" : model.beamStatus?.available != true ? model.beamStatus?.message ?? "Sensor unavailable" : model.beamStatus?.blocked == true ? "Beam blocked · clear the opening" : "Beam clear · ready for a basket")
+                        Label("Automatic scoring", systemImage: "basketball.fill").font(.headline)
+                        Text(!live ? "Scoring offline · connect to the Pi" : model.beamStatus?.available != true ? model.beamStatus?.message ?? "Sensor unavailable" : "Ready · each basket counts as one make")
                             .font(.subheadline).foregroundStyle(live && model.beamStatus?.available == true ? .green : .orange)
                     }.card()
                 }
@@ -93,12 +93,12 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Set your challenge").font(.title3.bold())
                         Picker("Throwing distance", selection: Binding(get: { game.round.targetMeters }, set: { game.configure(target: $0) })) {
-                            ForEach(1...3, id: \.self) { Text("\($0)m · \($0) pt").tag($0) }
+                            ForEach(1...3, id: \.self) { Text("\($0)m").tag($0) }
                         }.pickerStyle(.segmented)
                         Picker("Round length", selection: Binding(get: { game.round.durationSeconds }, set: { game.configure(duration: $0) })) {
                             ForEach([30, 60, 90], id: \.self) { Text("\($0)s").tag($0) }
                         }.pickerStyle(.segmented)
-                        Text("Each beam interruption scores the selected distance’s points. Sensor scoring must be connected to start.")
+                        Text("Make a basket to add one point. Misses do not change your score. Distance only sets the can’s position.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }.card()
                 }
@@ -183,7 +183,7 @@ struct ContentView: View {
                                 Label("Summon · stop \(round.targetMeters)m away", systemImage: "location.fill").frame(maxWidth: .infinity)
                             }.buttonStyle(ActionStyle()).disabled(!ready || model.driveStatus?.summonReady != true || !model.connected)
                             if ready && model.driveStatus?.summonReady != true {
-                                Text("Manual drive is ready. Summon unlocks after the mounted bearing is calibrated on the Pi.").font(.footnote).foregroundStyle(.secondary)
+                                Text("Manual drive is ready. Summon is disabled in the Pi configuration.").font(.footnote).foregroundStyle(.secondary)
                             }
                         }
                         if let error = model.driveError {
@@ -218,8 +218,8 @@ struct ContentView: View {
             Section("2 · Raspberry Pi connection") {
                 TextField("http://192.168.1.20:5001", text: $receiver)
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(model.running)
-                SecureField("API token", text: $token).disabled(model.running)
-                Text("For driving, enter the same Pi URL and API token on both phones. Leave blank for score-only play. Tokens stay in memory.").font(.footnote)
+                LabeledContent("API token", value: token)
+                Text("Enter the same Pi URL on both phones. API token 12345 is already configured.").font(.footnote)
             }
             Section("3 · Connect both phones") {
                 Button(model.running ? "Disconnect" : "Connect phones", systemImage: model.running ? "xmark.circle" : "antenna.radiowaves.left.and.right") {

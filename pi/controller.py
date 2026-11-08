@@ -20,7 +20,7 @@ class Controller:
         self.sign, self.offset = bearing_sign, bearing_offset
         self.invert_left, self.invert_right = invert_left, invert_right
         self.state = 'stopped' if drive else 'disabled'
-        self.message = 'Ready' if drive else 'Start Pi server with --drive to enable motors'
+        self.message = 'Ready' if drive else 'Motor control disabled in pi/server.py'
         self.left = self.right = 0
         self.pose = None
         self.owner = None
@@ -119,7 +119,7 @@ class Controller:
         if same_owner and data['sequence'] <= self.sequence:
             raise MotionError('Out-of-order command')
         if not self.drive:
-            raise MotionError('Motors disabled on Pi; start server with --drive')
+            raise MotionError('Motor control disabled in pi/server.py')
         if self.state == 'fault':
             raise MotionError(self.message)
         if self.command and not same_owner:
@@ -134,7 +134,7 @@ class Controller:
             raise MotionError('Target must be 1, 2 or 3 m')
         if action == 'summon':
             if not self.calibrated:
-                raise MotionError('Set --bearing-calibrated after checking the mounted phone bearing')
+                raise MotionError('Summon disabled in pi/server.py')
             if not self._valid_pose():
                 raise MotionError('Waiting for fresh robot-phone distance and bearing')
         if self.command and self.command['id'] == data['id']:

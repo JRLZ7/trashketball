@@ -24,7 +24,7 @@ class BeamTests(unittest.TestCase):
         status = self.beam.snapshot()
         self.assertEqual(status['breakCount'], 1)
         self.assertEqual(len(status['events']), 1)
-        self.assertEqual(status['events'][0]['points'], 3)
+        self.assertEqual(status['events'][0]['points'], 1)
     def test_bounce_and_rearm(self):
         self.break_beam()
         self.beam.edge(False); self.clock.advance(.01); self.break_beam()
@@ -47,7 +47,7 @@ class BeamTests(unittest.TestCase):
     def test_robot_cannot_select_round_or_points(self):
         self.beam.update_round(dict(role='robot', game={**self.game, 'id':'wrong', 'targetMeters':1}))
         self.break_beam(); self.assertEqual(self.beam.snapshot()['events'][0]['roundID'], 'round-1')
-        self.assertEqual(self.beam.snapshot()['events'][0]['points'], 3)
+        self.assertEqual(self.beam.snapshot()['events'][0]['points'], 1)
     def test_next_round_has_no_old_events(self):
         self.break_beam()
         self.beam.update_round(dict(role='user',game={**self.game,'id':'round-2'}))

@@ -1,11 +1,9 @@
 """Authenticated telemetry and motor bridge for the teammate-maintained Drive API."""
-import argparse
 from pathlib import Path
 import sys
 import hmac
 import json
 import math
-import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,7 +16,16 @@ scorer = BeamScorer()
 control_lock = threading.RLock()
 latest = {}
 lock = threading.Lock()
-TOKEN = os.environ.get('TRASHBOT_TOKEN', '')
+# Startup settings: edit here if the robot's wiring or mounting changes.
+TOKEN = "12345"
+ENABLE_MOTORS = True
+ENABLE_BEAM = True
+ENABLE_SUMMON = True
+BEARING_SIGN = 1
+BEARING_OFFSET_DEG = 0.0
+INVERT_LEFT = False
+INVERT_RIGHT = False
+BEAM_ACTIVE_HIGH = False
 
 
 def valid_number(value):
@@ -60,7 +67,7 @@ def validate(data):
         for shot in game['shots']:
             if not isinstance(shot, dict) or type(shot.get('made')) is not bool or not isinstance(shot.get('id'), str):
                 return False
-            if type(shot.get('points')) is not int or shot['points'] != (game['targetMeters'] if shot['made'] else 0):
+            if type(shot.get('points')) is not int or shot['points'] != (1 if shot['made'] else 0):
                 return False
         for key in ('startedAt', 'endsAt'):
             if game.get(key) is not None and not valid_number(game[key]):
@@ -170,37 +177,26 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global controller, scorer
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--drive', action='store_true', help='Enable real Pi GPIO motors')
-    parser.add_argument('--bearing-calibrated', action='store_true', help='Allow summon after verifying mount and bearing sign')
-    parser.add_argument('--bearing-sign', type=int, choices=(-1, 1), default=1)
-    parser.add_argument('--bearing-offset-deg', type=float, default=0)
-    parser.add_argument('--invert-left', action='store_true')
-    parser.add_argument('--invert-right', action='store_true')
-    parser.add_argument('--beam', action='store_true', help='Enable GPIO 24 scoring without motor output')
-    parser.add_argument('--no-beam', action='store_true', help='Skip the beam sensor even with --drive')
-    parser.add_argument('--beam-active-high', action='store_true', help='Count HIGH as blocked instead of the default LOW')
-    args = parser.parse_args()
-    if len(TOKEN) < 16:
-        raise SystemExit('Set TRASHBOT_TOKEN to a random secret of at least 16 characters.')
-    if not math.isfinite(args.bearing_offset_deg):
-        raise SystemExit('Bearing offset must be finite')
+    if len(sys.argv) > 1:
+        raise SystemExit("Run python3 pi/server.py without flags; edit startup settings in that file.")
+    if not math.isfinite(BEARING_OFFSET_DEG) or BEARING_SIGN not in (-1, 1):
+        raise SystemExit('Check BEARING_OFFSET_DEG and BEARING_SIGN in pi/server.py')
     drive = None
-    if args.drive:
+    if ENABLE_MOTORS:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'Firmware' / 'PI'))
         from trashketball import Drive
         drive = Drive()
     stopped = threading.Event()
     server = None
     try:
-        controller = Controller(drive, calibrated=args.bearing_calibrated,
-                                bearing_sign=args.bearing_sign,
-                                bearing_offset=math.radians(args.bearing_offset_deg),
-                                invert_left=args.invert_left, invert_right=args.invert_right)
+        controller = Controller(drive, calibrated=ENABLE_SUMMON,
+                                bearing_sign=BEARING_SIGN,
+                                bearing_offset=math.radians(BEARING_OFFSET_DEG),
+                                invert_left=INVERT_LEFT, invert_right=INVERT_RIGHT)
         scorer = BeamScorer(pin=24)
-        if (args.drive or args.beam) and not args.no_beam:
+        if ENABLE_BEAM:
             try:
-                scorer.attach(active_high=args.beam_active_high)
+                scorer.attach(active_high=BEAM_ACTIVE_HIGH)
             except Exception as error:
                 scorer.message = 'Beam sensor unavailable: ' + str(error)
                 print(scorer.message, flush=True)

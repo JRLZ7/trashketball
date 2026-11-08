@@ -18,7 +18,7 @@ spec.loader.exec_module(receiver)
 class ReceiverTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        receiver.TOKEN = 'test-only-secret-123456'
+        receiver.TOKEN = '12345'
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), receiver.Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -75,7 +75,7 @@ class ReceiverTests(unittest.TestCase):
 
     def test_game_and_intent(self):
         game = dict(id='round-1', targetMeters=2, durationSeconds=30, finished=False,
-                    shots=[dict(id='shot-1', made=True, points=2)])
+                    shots=[dict(id='shot-1', made=True, points=1)])
         intent = dict(id='request-1', action='summon', targetMeters=2)
         sample = {**self.sample(), 'game': game, 'intent': intent}
         self.assertEqual(self.call('/measurements', sample)[0], 200)
@@ -125,7 +125,7 @@ class ReceiverTests(unittest.TestCase):
             reply = self.call('/measurements', sample)[1]
             self.assertTrue(reply['beam']['available'])
             self.assertEqual(reply['beam']['pin'], 24)
-            self.assertEqual(reply['beam']['events'][0]['points'], 2)
+            self.assertEqual(reply['beam']['events'][0]['points'], 1)
             first = reply['beam']['events'][0]['id']
             self.assertEqual(self.call('/status')[1]['beam']['events'][0]['id'], first)
         finally:

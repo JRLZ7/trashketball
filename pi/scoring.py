@@ -12,7 +12,7 @@ class BeamScorer:
         self.pin, self.cooldown, self.clock, self.wall = pin, cooldown, clock, wall
         self.lock = threading.RLock()
         self.available = False
-        self.message = 'Start Pi with --drive or --beam for sensor scoring'
+        self.message = 'Beam scoring disabled in pi/server.py'
         self.blocked = None
         self.clear_since = None
         self.last_break = float('-inf')
@@ -60,7 +60,7 @@ class BeamScorer:
             if not game['start'] + SWIFT_EPOCH <= stamp < game['end'] + SWIFT_EPOCH:
                 return
             self.events.append(dict(id=str(uuid.uuid4()), roundID=game['id'],
-                                    timestamp=stamp, points=game['target']))
+                                    timestamp=stamp, points=1))
 
     def snapshot(self):
         with self.lock:
