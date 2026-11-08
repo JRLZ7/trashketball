@@ -167,6 +167,9 @@ struct ContentView: View {
                         }
                         Text(live ? model.driveStatus?.message ?? "Waiting for Pi" : model.piUnavailable ? "Pi unavailable. Start the server; this screen will reconnect automatically." : "Pi not connected. Tracking between phones can still work without it.")
                             .font(.subheadline).foregroundStyle(.secondary)
+                        if live && model.piConfigured {
+                            Text(model.piClockStatus).font(.caption).foregroundStyle(.secondary)
+                        }
                         if !isRobot {
                             Text("Hold an arrow to drive. Release to stop.").font(.footnote).foregroundStyle(.secondary)
                             HStack {

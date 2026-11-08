@@ -92,7 +92,8 @@ def validate(data):
 class Handler(BaseHTTPRequestHandler):
     def reply(self, status, body):
         if isinstance(body, dict) and 'drive' in body:
-            body = {**body, 'beam': scorer.snapshot()}
+            # Sample immediately before serialization, not at request queue entry.
+            body = {**body, 'beam': scorer.snapshot(), 'server_time': time.time()}
         raw = json.dumps(body, allow_nan=False).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')

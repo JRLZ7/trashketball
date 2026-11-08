@@ -167,5 +167,22 @@ class MotionTests(unittest.TestCase):
         for bad in (1.1, 0, -1, float('nan'), True):
             with self.assertRaises(ValueError): Controller(self.drive, left_gain=bad)
 
+    def test_clock_offset_corrected_timestamp_preserves_expiry_and_watchdog(self):
+        # The phone may be a day behind; synchronization stamps in the Pi domain.
+        controller = Controller(self.drive, clock=self.clock, wall=lambda:self.clock()+86400)
+        command = self.cmd(); command['sent_at'] += 86400
+        controller.control(command)
+        self.assertEqual(self.drive.outputs[-1], (25,25))
+        self.clock.advance(.1)
+        renewal = self.cmd(); renewal['sent_at'] += 86400
+        controller.control(renewal)
+        self.assertEqual(self.drive.outputs[-1], (25,25))
+        self.clock.advance(.301); controller.tick()
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+        with self.assertRaises(MotionError): controller.control(renewal)
+        stale = self.cmd(id='delayed'); stale['sent_at'] += 86400-.4
+        with self.assertRaisesRegex(MotionError, 'age .*ms'):
+            controller.control(stale)
+
 
 if __name__ == '__main__': unittest.main()

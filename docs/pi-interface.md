@@ -26,7 +26,7 @@ Example control packet:
 }
 ```
 
-Actions: `forward`, `reverse`, `left`, `right`, `summon`, `stop`, `drive`. Speed is percent of the driver's command scale (1–100 allowed); the driver further applies its existing 150/255 PWM duty cap. App manual range is 20–100, default 100; guided pivots taper 35–55%; forward corrections use per-wheel requests up to 100. Legacy Summon uses its requested speed without the former 80/70 reductions. At 100%, each active channel reaches the 150/255 driver cap multiplied by its motor gain; stops remain zero. `targetMeters` is 1, 2 or 3. `sent_at` is Unix seconds. For motion it must be within [-250 ms future, 300 ms old] of the Pi clock. Keep network time enabled.
+Actions: `forward`, `reverse`, `left`, `right`, `summon`, `stop`, `drive`. Speed is percent of the driver's command scale (1–100 allowed); the driver further applies its existing 150/255 PWM duty cap. App manual range is 20–100, default 100; guided pivots taper 35–55%; forward corrections use per-wheel requests up to 100. Legacy Summon uses its requested speed without the former 80/70 reductions. At 100%, each active channel reaches the 150/255 driver cap multiplied by its motor gain; stops remain zero. `targetMeters` is 1, 2 or 3. `sent_at` is Unix seconds. For motion it must be within [-250 ms future, 300 ms old] of the Pi clock. The app now automatically estimates Pi time from authenticated replies; matching phone/Pi wall clocks is no longer required.
 
 A hold/Summon uses one UUID and renews it every 100 ms, with increasing sequence and a new timestamp. The Pi expires the lease after 300 ms. The app uses a separate HTTP task for control, independent of telemetry; only one renewal is outstanding. New actions get new IDs. Release/Stop uses a new ID. Any authenticated valid Stop takes precedence, including with skewed clocks or an older sequence. Completed, stopped, tracking-lost or timed-out command IDs cannot restart (bounded recent-ID cache, plus sequence ordering for the active owner). Another client cannot take over active motion; it may Stop, then issue a new command.
 
@@ -112,3 +112,13 @@ Use a real current `sent_at`. The `speed` field is still validated; `drive` uses
 `LEFT_MOTOR_GAIN = 0.90`, `RIGHT_MOTOR_GAIN = 1.00` in `pi/server.py` compensate for observed rightward drift. Gains multiply every wheel request before wiring inversion and the 150/255 PWM ceiling. Status `left`/`right` includes gains. Controller construction rejects gains <=0, >1, booleans and non-finite values.
 
 Brief missing sensors get a stopped recovery window of 2 s; a blocked/unobserved route gets up to 8 s. Recovery requires three new clear depth frames, fresh UWB and a confirmed zero-output Stop. Close obstacles, Pi errors, watchdog timeouts and AR resets remain final stops. Switching tabs alone does not end guidance. The forward ultrasonic sensor provides no rear protection, so automatic reversing remains disabled.
+
+## Automatic Pi clock synchronization
+
+Drive-containing replies (`/measurements`, `/status`, `/control`, `/inspection`, including command rejections) include `server_time`, sampled in Pi Unix seconds immediately before response serialization. Existing `/health` and `/latest` shapes are unchanged. Rebuild both phone apps and update/restart `pi/server.py` for this addition.
+
+Before motion, iOS estimates Pi time using a request's local monotonic send/receive times and the returned server time, with half the round-trip interval as a transit estimate. Only samples with round trip <=200 ms are accepted; recent lower-latency samples are preferred, refreshed after 2 s, and expire after 5 s. Phone wall-clock offset does not enter command timestamps. A Pi clock jump can replace the current estimate; a rejected run still requires explicit restart.
+
+Movement stays disabled until synchronization is available. Motor status displays clock-sync state and sample RTT. A dedicated URLSession keeps telemetry requests out of the motor connection pool. Local movement acknowledgement age uses monotonic request elapsed time, **not** subtraction between phone and Pi wall times.
+
+The Pi still rejects genuinely expired/future commands, checks sequence/ownership and stops after 300 ms without accepted renewals. Stop remains accepted without synchronized clocks. Expiry errors now report the signed packet age in milliseconds, making clock mismatches and large delays easier to diagnose. There is no automatic retry/rearming after a rejected movement command.

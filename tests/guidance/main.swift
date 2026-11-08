@@ -60,3 +60,23 @@ let differential = MotionCommand(decision:ApproachDecision(leftPercent:100,right
 let differentialRoundTrip = try decoder.decode(MotionCommand.self,from:encoder.encode(differential))
 assert(differentialRoundTrip.action == "drive" && differentialRoundTrip.leftPercent == 100 && differentialRoundTrip.rightPercent == 85)
 print("Bounded route wait and production differential command encoding passed")
+
+// Phone and Pi wall clocks can differ arbitrarily; only local monotonic RTT matters.
+var clockSync = PiClockSync()
+assert(clockSync.timestamp(at:10) == nil)
+assert(clockSync.observe(serverTime:1_700_000_000,sent:10,received:10.04))
+let piStamp = clockSync.timestamp(at:10.14)!
+assert(abs(piStamp-1_700_000_000.12) < 0.00001)
+assert(clockSync.timestamp(at:15.04) == nil, "Old synchronization must not authorize motion")
+assert(!clockSync.observe(serverTime:1_700_000_001,sent:11,received:11.3), "Congested samples cannot reset synchronization")
+assert(!clockSync.observe(serverTime:Double.nan,sent:11,received:11.01))
+assert(!clockSync.observe(serverTime:1_700_000_001,sent:11,received:10))
+let wallOffsetCommand = MotionCommand(client_id:"can",sequence:2,sent_at:piStamp,action:"forward",targetMeters:2,speed:100)
+let matchingReply = PiReply(drive:DriveStatus(enabled:true,state:"manual",message:"OK",summonReady:true,left:90,right:100,commandID:wallOffsetCommand.id),error:nil,beam:nil)
+assert(GuidancePiConfirmation.movement(wallOffsetCommand,reply:matchingReply,httpCode:200,failed:false,now:100,elapsed:0.05), "Acknowledgement age must not subtract server time from phone time")
+assert(!GuidancePiConfirmation.movement(wallOffsetCommand,reply:matchingReply,httpCode:200,failed:false,now:100,elapsed:0.3))
+assert(clockSync.observe(serverTime:1_800_000_000,sent:12,received:12.04), "Pi clock changes must replace the old clock domain")
+assert(abs(clockSync.timestamp(at:12.14)!-1_800_000_000.12) < 0.00001)
+clockSync.reset()
+assert(clockSync.timestamp(at:13) == nil)
+print("Pi clock: large offsets, monotonic RTT, stale/high-latency/invalid sample rejection, clock jumps and acknowledgement-domain separation passed")

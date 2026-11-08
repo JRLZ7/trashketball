@@ -87,6 +87,16 @@ class ReceiverTests(unittest.TestCase):
             receiver.latest['robot'] = (sample, time.monotonic() - 2)
         self.assertIsNone(self.call('/latest')[1]['robot']['intent'])
 
+    def test_replies_include_current_pi_clock(self):
+        before = time.time()
+        status, reply = self.call('/status')
+        self.assertEqual(status,200)
+        self.assertGreaterEqual(reply['server_time'],before)
+        self.assertLessEqual(reply['server_time'],time.time())
+        status, rejected = self.call('/control', dict(action='forward'))
+        self.assertEqual(status,409)
+        self.assertIn('server_time',rejected)
+
     def test_http_motor_control(self):
         from controller import Controller
         class FakeDrive:

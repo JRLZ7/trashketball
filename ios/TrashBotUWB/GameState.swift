@@ -100,6 +100,7 @@ struct DriveStatus: Codable {
 }
 
 struct PiReply: Decodable {
+    var server_time: Double? = nil
     var drive: DriveStatus?
     var error: String?
     var beam: BeamStatus?
@@ -199,8 +200,8 @@ struct GuidanceSensorHold {
 // A successful HTTP response alone does not prove the Pi owns this live command.
 enum GuidancePiConfirmation {
     static func movement(_ command: MotionCommand, reply: PiReply, httpCode: Int?, failed: Bool,
-                         now: TimeInterval) -> Bool {
-        let age = now-command.sent_at
+                         now: TimeInterval, elapsed: TimeInterval? = nil) -> Bool {
+        let age = elapsed ?? (now-command.sent_at)
         guard age.isFinite, age >= 0, age < 0.25, !failed, httpCode == 200,
               reply.error == nil, let status = reply.drive else { return false }
         return status.enabled && status.state == "manual" && status.commandID == command.id
@@ -209,5 +210,31 @@ enum GuidancePiConfirmation {
         guard !failed, httpCode == 200, reply.error == nil, let status = reply.drive else { return false }
         return status.enabled && status.state == "stopped" && status.commandID == nil &&
             status.left == 0 && status.right == 0
+    }
+}
+
+// Estimate Pi wall time at local monotonic uptime; phone wall-clock offsets are irrelevant.
+// Only low-latency samples may authorize motion. This never changes the Pi watchdog.
+struct PiClockSync {
+    private var serverAtReceipt: TimeInterval?
+    private var receiptUptime: TimeInterval?
+    private(set) var roundTrip: TimeInterval?
+    mutating func reset() { self = Self() }
+    @discardableResult mutating func observe(serverTime: TimeInterval?, sent: TimeInterval,
+                                            received: TimeInterval) -> Bool {
+        let rtt = received-sent
+        guard let serverTime, serverTime.isFinite, serverTime > 0,
+              sent.isFinite, received.isFinite, rtt >= 0, rtt <= 0.2 else { return false }
+        let estimate = serverTime+rtt/2
+        if let old = timestamp(at:received), let prior = receiptUptime, let best = roundTrip,
+           received-prior < 2, rtt > best+0.005, abs(old-estimate) < 0.25 { return true }
+        serverAtReceipt = estimate; receiptUptime = received; roundTrip = rtt
+        return true
+    }
+    func timestamp(at uptime: TimeInterval) -> TimeInterval? {
+        guard uptime.isFinite, let serverAtReceipt, let receiptUptime else { return nil }
+        let age = uptime-receiptUptime
+        guard age >= 0, age < 5 else { return nil }
+        return serverAtReceipt+age
     }
 }

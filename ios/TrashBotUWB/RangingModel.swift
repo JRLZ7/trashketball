@@ -282,7 +282,19 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private var controlTimer: Timer?
     private var controlSequence = 0
     private var trackingSession = UUID().uuidString
-    var canControlPi: Bool { running && endpoint != nil }
+    private var piClock = PiClockSync()
+    @Published private(set) var piClockStatus = "Waiting for Pi clock synchronization"
+    var piConfigured: Bool { running && endpoint != nil }
+    var canControlPi: Bool { running && endpoint != nil && piClock.timestamp(at:ProcessInfo.processInfo.systemUptime) != nil }
+    private func observePiClock(_ reply: PiReply, sent: TimeInterval) {
+        let received = ProcessInfo.processInfo.systemUptime
+        if piClock.observe(serverTime:reply.server_time,sent:sent,received:received), let rtt = piClock.roundTrip {
+            piClockStatus = String(format:"Pi clock synchronized · round trip %.0f ms",rtt*1000)
+        } else if piClock.timestamp(at:received) == nil {
+            piClockStatus = reply.server_time == nil ? "Update/restart Pi server to enable automatic clock synchronization" :
+                "Pi clock not synchronized · network round trip exceeds 200 ms"
+        }
+    }
     func driveIsLive(at now: Date) -> Bool {
         driveUpdated.map { now.timeIntervalSince($0) >= 0 && now.timeIntervalSince($0) < 1 } ?? false
     }
@@ -294,6 +306,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         guard !remoteApproach else { driveError = "Guided approach is active on the can phone. Stop it before manual driving."; return }
         guard !inspectionActive, !remoteInspection else { driveError = "Close LiDAR Lab on the can phone before driving."; return }
         guard !isRobot, running, endpoint != nil else { driveError = "Enter the Pi URL and token, then connect."; return }
+        guard canControlPi else { driveError = piClockStatus; return }
         guard driveIsLive(at: .now), driveStatus?.enabled == true else { driveError = "Pi motor bridge is not ready."; return }
         if action == "summon" && (!connected || driveStatus?.summonReady != true) {
             driveError = "Connect both phones and calibrate the mounted bearing on the Pi."; return
@@ -341,7 +354,14 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         let requestID = controlRequestID
         controlSequence += 1
         command.sequence = controlSequence
-        command.sent_at = Date().timeIntervalSince1970
+        let sentUptime = ProcessInfo.processInfo.systemUptime
+        let synchronizedTime = piClock.timestamp(at:sentUptime)
+        guard command.action == "stop" || synchronizedTime != nil else {
+            if approachActive { endApproach("Stopped · " + piClockStatus) }
+            else { driveError = piClockStatus; motion = nil; activeAction = nil }
+            return
+        }
+        command.sent_at = synchronizedTime ?? Date().timeIntervalSince1970
         motion = command
         var req = URLRequest(url: endpoint.deletingLastPathComponent().appendingPathComponent("control"))
         req.httpMethod = "POST"
@@ -349,24 +369,26 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         req.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONEncoder().encode(command)
         let current = generation
-        controlRequest = http.dataTask(with: req) { [weak self] data, response, error in
+        controlRequest = controlHTTP.dataTask(with: req) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self, self.generation == current, self.controlRequestID == requestID, self.motion?.id == command.id else { return }
                 self.controlRequest = nil
+                let requestElapsed = ProcessInfo.processInfo.systemUptime-sentUptime
                 var confirmedMovement = false
                 var confirmedStop = false
                 if let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data) {
+                    self.observePiClock(reply,sent:sentUptime)
                     self.applyBeamReply(reply.beam)
                     if let status = reply.drive {
                         self.applyDrive(status)
                         confirmedStop = GuidancePiConfirmation.stopped(reply:reply,
                             httpCode:(response as? HTTPURLResponse)?.statusCode,failed:error != nil)
                         confirmedMovement = GuidancePiConfirmation.movement(command,reply:reply,
-                            httpCode:(response as? HTTPURLResponse)?.statusCode,failed:error != nil,now:Date().timeIntervalSince1970)
+                            httpCode:(response as? HTTPURLResponse)?.statusCode,failed:error != nil,now:Date().timeIntervalSince1970,elapsed:requestElapsed)
                         if self.approachActive && command.action != "stop" && !confirmedMovement &&
-                            Date().timeIntervalSince1970-command.sent_at >= 0.25 {
+                            requestElapsed >= 0.25 {
                             self.driveError = String(format:"Pi acknowledgement too slow (%.0f ms); check Wi-Fi",
-                                (Date().timeIntervalSince1970-command.sent_at)*1000)
+                                requestElapsed*1000)
                         }
                         if status.commandID != command.id { self.motion = nil; self.activeAction = nil }
                     }
@@ -469,6 +491,15 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         return URLSession(configuration: config)
     }()
 
+    // Keep telemetry uploads from occupying the motor command connection pool.
+    private lazy var controlHTTP: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpMaximumConnectionsPerHost = 1
+        config.timeoutIntervalForRequest = 0.6
+        config.timeoutIntervalForResource = 0.8
+        return URLSession(configuration:config)
+    }()
+
     func start(role: String, receiver: String, token: String) {
         stop()
         guard NISession.deviceCapabilities.supportsPreciseDistanceMeasurement else {
@@ -527,6 +558,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         request?.cancel(); request = nil
         controlRequest = nil
         driveStatus = nil; driveUpdated = nil; driveError = nil
+        piClock.reset(); piClockStatus = "Waiting for Pi clock synchronization"
         beamStatus = nil; beamUpdated = nil
         piUnavailable = false; nextUploadAt = .distantPast; uploadBackoff = 0.25
         advertiser?.stopAdvertisingPeer(); advertiser = nil
@@ -593,6 +625,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         req.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let current = generation
+        let sentUptime = ProcessInfo.processInfo.systemUptime
         request = http.dataTask(with: req) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self, self.generation == current else { return }
@@ -601,6 +634,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                 if error == nil, httpCode == 200,
                    let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data), let status = reply.drive {
                     self.applyBeamReply(reply.beam)
+                    self.observePiClock(reply,sent:sentUptime)
                     self.piUnavailable = false
                     self.uploadBackoff = 0.25
                     self.nextUploadAt = .distantPast

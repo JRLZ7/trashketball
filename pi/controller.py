@@ -119,7 +119,7 @@ class Controller:
             raise MotionError('Missing command timestamp')
         # Stops are accepted even when a clock is skewed; movement is not.
         if action != 'stop' and not -0.25 <= self.wall() - stamp <= 0.3:
-            raise MotionError('Command expired or phone/Pi clocks differ')
+            raise MotionError(f'Command expired or phone/Pi clocks differ (age {(self.wall()-stamp)*1000:+.0f} ms; allowed -250..300 ms). Resynchronize the app with Pi')
         same_owner = self.owner == data['client_id']
         if action == 'stop':
             if same_owner:
