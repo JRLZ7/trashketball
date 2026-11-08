@@ -155,9 +155,10 @@ struct ContentView: View {
                         capsule(!fresh ? "WAITING FOR TRACKING" : bearing == nil ? "DISTANCE ONLY" : "LIVE POSITION", color: bearing == nil ? orange : .green)
                     }.card()
                 }
+                if isRobot { guidedApproachCard }
                 TimelineView(.periodic(from: .now, by: 0.2)) { context in
                     let live = model.driveIsLive(at: context.date)
-                    let ready = live && model.driveStatus?.enabled == true && model.canControlPi && !model.remoteInspection && !model.inspectionActive && model.driveStatus?.state != "inspection" && model.driveStatus?.state != "fault"
+                    let ready = live && model.driveStatus?.enabled == true && model.canControlPi && !model.remoteInspection && !model.remoteApproach && !model.inspectionActive && model.driveStatus?.state != "inspection" && model.driveStatus?.state != "fault"
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
                             Text(isRobot ? "Motor status" : "Move the basket").font(.title3.bold())
@@ -187,8 +188,10 @@ struct ContentView: View {
                             }.frame(maxWidth: .infinity)
                             Divider()
                             Button { model.sendIntent(action: "summon", targetMeters: round.targetMeters, speed: min(driveSpeed, 80)) } label: {
-                                Label("Summon · stop \(round.targetMeters)m away", systemImage: "location.fill").frame(maxWidth: .infinity)
+                                Label("Legacy Summon · \(round.targetMeters)m away", systemImage: "location.fill").frame(maxWidth: .infinity)
                             }.buttonStyle(ActionStyle()).disabled(!ready || model.driveStatus?.summonReady != true || !model.connected)
+                            Text(model.remoteApproach ? "Can phone is running guided approach. Stop remains available." : "Legacy Summon has no LiDAR obstacle checks. Use Guided approach in Locate on the can phone for the new mode.")
+                                .font(.footnote).foregroundStyle(.secondary)
                             if ready && model.driveStatus?.summonReady != true {
                                 Text("Manual drive is ready. Summon is disabled in the Pi configuration.").font(.footnote).foregroundStyle(.secondary)
                             }
@@ -207,7 +210,41 @@ struct ContentView: View {
                 }.card()
             }.padding(20)
         }.background(ink).toolbar(.hidden, for: .navigationBar)
-            .onDisappear { model.stopMotion() }
+            .onDisappear { model.endApproachPreview(); model.stopMotion() }
+    }
+
+    private var guidedApproachCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Guided approach").font(.title3.bold())
+            Text("Uses the Locate bearing and distance directly, with live LiDAR lane checks. Stops when blocked; does not route around obstacles.")
+                .font(.subheadline).foregroundStyle(.secondary)
+            Picker("Stop distance", selection: $model.approachTarget) {
+                ForEach(1...3, id: \.self) { Text("\($0) m").tag($0) }
+            }.pickerStyle(.segmented).disabled(model.approachActive)
+            HStack {
+                Button(model.approachPreviewing ? "End preview" : "Preview guidance") {
+                    if model.approachPreviewing { model.endApproachPreview() }
+                    else { model.previewApproach() }
+                }.buttonStyle(.bordered).disabled(!model.approachPreviewing && !model.canPreviewApproach)
+                Spacer()
+                if model.approachPreviewing {
+                    Text(model.approachActive ? "DRIVING" : "PREVIEW").font(.caption.bold())
+                        .foregroundStyle(model.approachActive ? .green : orange)
+                }
+            }
+            Text(model.approachDecision.message).font(.headline)
+            Text(model.approachNote).font(.footnote).foregroundStyle(.secondary)
+            HStack {
+                Button { model.beginApproach() } label: {
+                    Label("Start guided approach", systemImage: "location.fill").frame(maxWidth: .infinity)
+                }.buttonStyle(.borderedProminent)
+                    .disabled(!model.approachPreviewing || model.approachActive || model.approachDecision.action == "stop" || !model.canControlPi)
+                Button("Stop", role: .destructive) { model.stopMotion() }
+                    .buttonStyle(.bordered).disabled(!model.running)
+            }
+            Text("Preview works without the Pi. Connect both phones with camera assistance on; mount the rear camera forward, slightly down, at the assumed 44 cm height. Driving uses fixed 50% forward / 45% turn commands and the Pi's existing PWM cap. Keep space around the can for turns.")
+                .font(.caption).foregroundStyle(.secondary)
+        }.card()
     }
 
     private var setup: some View {

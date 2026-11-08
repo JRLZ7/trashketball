@@ -87,3 +87,12 @@ Scoring is flat: every detected basket is one point, regardless of target distan
 ## LiDAR inspection hold
 
 Authenticated `POST /inspection` with `{"enabled":true}` stops motion immediately and latches an inspection interlock. Manual and Summon commands return HTTP 409 while held, including after an ordinary Stop. `{"enabled":false}` releases the hold and leaves motors stopped; a new movement command is required. The hold has no automatic expiry, so a lost phone connection cannot resume a previous command. Closing Lab requests release; if that fails, restore connectivity and reopen/close Lab or restart the Pi. Replies use the existing `drive`/`beam` envelope; `drive.state` is `inspection` while held. No camera frames or depth maps are sent to the Pi.
+
+
+## Phone-side guided approach
+
+The can phone's Locate screen has an experimental Guided approach. It makes decisions on iPhone from the existing relative Locate bearing/range and the latest LiDAR forward corridor; it does not use the cyan world-map target for steering. It sends existing `forward`, `left`, `right`, `stop` actions through `/control`, owned by the can app's client ID. No server changes, ML inference, map planning or new flags are needed. The Pi continues to enforce ownership, sequence/expiry and 300 ms command watchdog.
+
+Guidance ticks every 100 ms; at most one control renewal is outstanding. Action changes use new IDs. The can announces guided activity to the player so manual/legacy Summon starts are disabled while guided driving is active. Player Stop still sends both an HTTP Stop and a peer stop request. Inspection Lab is mutually exclusive; opening it ends guidance before requesting the existing hold. Disconnect, app background, leaving Locate, a Pi error/rejected/ended command, stale UWB/depth, blocked/unknown corridor or arrival ends movement and never automatically rearms it. UI preview can continue updating after a latched stop, but only Start guided approach can arm again.
+
+See [the guided approach test](guided-approach.md) for thresholds and physical limitations. Legacy Pi-side Summon is unchanged and still has no LiDAR checks.

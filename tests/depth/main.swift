@@ -83,3 +83,29 @@ print("Local map: UWB frame conversion, height projection, invalid readings, occ
 
 assert(frontTarget.isFresh(at: 10.5))
 assert(!frontTarget.isFresh(at: 11.1) && !frontTarget.isFresh(at: 9), "Stale and future targets hidden")
+
+func guidance(distance: Float? = 3, angle: Float? = 0, age: Double? = 0.01, connected: Bool = true,
+              depthAge: Double = 0.01, normal: Bool = true, floorReady: Bool = true,
+              corridor: CorridorEstimate = CorridorEstimate(observedFreeDistance: 1), previous: String? = nil) -> ApproachDecision {
+    GuidedApproach.evaluate(distance: distance, angle: angle, uwbAge: age, connected: connected,
+        depthAge: depthAge, trackingNormal: normal, floorReady: floorReady, corridor: corridor,
+        targetMeters: 1, previousAction: previous)
+}
+assert(guidance().action == "forward" && guidance().speed == 50)
+assert(guidance(angle: 0.5).action == "right" && guidance(angle: -0.5).action == "left")
+assert(guidance(angle: 0.5).speed == 45)
+assert(guidance(angle: 0.15, previous: "right").action == "right", "Turn hysteresis")
+assert(guidance(angle: 0.05, previous: "right").action == "forward")
+assert(guidance(angle: 0.15, previous: "forward").action == "forward")
+assert(guidance(distance: 1.1).action == "stop" && guidance(distance: 1.1).message.hasPrefix("Arrived"))
+assert(guidance(age: 0.25).action == "stop" && guidance(age: -0.1).action == "stop")
+assert(guidance(angle: nil).action == "stop" && guidance(distance: nil).action == "stop")
+assert(guidance(angle: .nan).action == "stop" && guidance(distance: .infinity).action == "stop")
+assert(guidance(connected: false).action == "stop")
+assert(guidance(depthAge: 0.4).action == "stop" && guidance(normal: false).action == "stop")
+assert(guidance(floorReady: false).action == "stop")
+assert(guidance(corridor: CorridorEstimate(nearestObstacle: 0.5, observedFreeDistance: 1)).action == "stop")
+assert(guidance(angle: 0.5, corridor: CorridorEstimate(nearestObstacle: 0.5, observedFreeDistance: 1)).action == "stop", "Block turns too when a forward obstacle is close")
+assert(guidance(corridor: CorridorEstimate()).action == "stop", "Unknown floor must stop")
+assert(guidance(corridor: CorridorEstimate(observedFreeDistance: .nan)).action == "stop")
+print("Guided approach: direct bearing, speed caps, hysteresis, arrival, stale/invalid sensors and obstruction checks passed")

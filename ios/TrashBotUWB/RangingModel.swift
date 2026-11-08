@@ -14,8 +14,80 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
     private var inspectionURL: URL?
     private var inspectionGeneration = UUID()
     private var sharedARAttached = false
+    @Published private(set) var approachPreviewing = false
+    @Published private(set) var approachActive = false
+    @Published private(set) var remoteApproach = false
+    @Published private(set) var approachDecision = ApproachDecision()
+    @Published private(set) var approachNote = "Preview first; movement starts only when explicitly requested."
+    @Published var approachTarget = 1
+    private var approachAck = Date.distantPast
+    var canPreviewApproach: Bool { isRobot && running && sharedARAttached && lidar.supportsDepth && !inspectionActive }
+
+    func previewApproach() {
+        guard canPreviewApproach else { approachNote = "Connect the can phone with camera assistance enabled; close Lab first."; return }
+        guard !approachPreviewing else { return }
+        approachPreviewing = true
+        approachNote = "Preview only · motors are not controlled by this preview."
+        lidar.startPreview()
+        tickApproach()
+    }
+    func endApproachPreview() {
+        guard approachPreviewing else { return }
+        stopMotion()
+        approachPreviewing = false
+        lidar.stopPreview()
+    }
+    func beginApproach() {
+        guard approachPreviewing, canPreviewApproach, !remoteInspection else { return }
+        tickApproach()
+        guard approachDecision.action != "stop" else { approachNote = approachDecision.message; return }
+        guard canControlPi, driveIsLive(at: .now), let status = driveStatus, status.enabled,
+              status.state != "inspection", status.state != "fault", status.commandID == nil,
+              status.left == 0, status.right == 0 else {
+            approachNote = "Pi must be connected and stopped. Stop existing movement first."; return
+        }
+        driveError = nil
+        approachAck = .now
+        approachActive = true
+        approachNote = "Guided approach active · Stop or leave Locate to end."
+        sendMessage(kind: "approach", value: true)
+        tickApproach()
+    }
+    private func endApproach(_ reason: String) {
+        guard approachActive else { return }
+        approachActive = false
+        approachNote = reason + " · press Start to try again."
+        sendMessage(kind: "approach", value: false)
+        stopMotion()
+    }
+    private func tickApproach() {
+        guard approachPreviewing else { return }
+        let now = Date()
+        let previous = approachDecision.action
+        approachDecision = GuidedApproach.evaluate(distance: distance, angle: bearing(at: now),
+            uwbAge: updated.map { now.timeIntervalSince($0) }, connected: connected,
+            depthAge: now.timeIntervalSince(lidar.snapshot.timestamp),
+            trackingNormal: lidar.snapshot.tracking == "Normal", floorReady: lidar.snapshot.calibrated,
+            corridor: lidar.snapshot.corridor, targetMeters: approachTarget, previousAction: previous)
+        guard approachActive else { return }
+        guard !inspectionActive, !remoteInspection, running, driveIsLive(at: now), driveStatus?.enabled == true,
+              driveStatus?.state != "fault", driveStatus?.state != "inspection", lidar.previewRunning else {
+            endApproach("Stopped · motor bridge or camera unavailable"); return
+        }
+        guard now.timeIntervalSince(approachAck) < 0.25 else {
+            endApproach("Stopped · Pi command acknowledgement stale"); return
+        }
+        guard approachDecision.action != "stop" else { endApproach(approachDecision.message); return }
+        if motion?.action != approachDecision.action || motion?.speed != approachDecision.speed {
+            motion = MotionCommand(client_id: deviceID, sequence: 0, sent_at: 0,
+                action: approachDecision.action, targetMeters: approachTarget, speed: approachDecision.speed)
+            activeAction = approachDecision.action
+            sendControl(force: true)
+        }
+    }
 
     func enterInspection(receiver: String) {
+        endApproachPreview()
         stopMotion()
         inspectionActive = true
         inspectionConfirmed = false
@@ -102,6 +174,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         beginMotion(action: action, targetMeters: targetMeters, speed: speed)
     }
     func beginMotion(action: String, targetMeters: Int = 2, speed: Int = 80) {
+        guard !remoteApproach else { driveError = "Guided approach is active on the can phone. Stop it before manual driving."; return }
         guard !inspectionActive, !remoteInspection else { driveError = "Close LiDAR Lab on the can phone before driving."; return }
         guard !isRobot, running, endpoint != nil else { driveError = "Enter the Pi URL and token, then connect."; return }
         guard driveIsLive(at: .now), driveStatus?.enabled == true else { driveError = "Pi motor bridge is not ready."; return }
@@ -116,6 +189,12 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         sendControl(force: true)
     }
     func stopMotion() {
+        if approachActive {
+            approachActive = false
+            approachNote = "Stopped · press Start to try again."
+            sendMessage(kind: "approach", value: false)
+        }
+        if !isRobot && remoteApproach { sendMessage(kind: "approachStop", value: true) }
         guard endpoint != nil, running else { motion = nil; activeAction = nil; return }
         motion = MotionCommand(client_id: deviceID, sequence: 0, sent_at: 0,
                                action: "stop", targetMeters: 2, speed: 25)
@@ -148,10 +227,12 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
             DispatchQueue.main.async {
                 guard let self, self.generation == current, self.motion?.id == command.id else { return }
                 self.controlRequest = nil
+                var confirmedMovement = false
                 if let data, let reply = try? JSONDecoder().decode(PiReply.self, from: data) {
                     self.applyBeamReply(reply.beam)
                     if let status = reply.drive {
                         self.applyDrive(status)
+                        confirmedMovement = error == nil && (response as? HTTPURLResponse)?.statusCode == 200 && reply.error == nil && status.enabled && status.state == "manual" && status.commandID == command.id
                         if status.commandID != command.id { self.motion = nil; self.activeAction = nil }
                     }
                     if let error = reply.error { self.driveError = error; self.motion = nil; self.activeAction = nil }
@@ -163,7 +244,17 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                     self.driveError = self.driveError ?? "Pi rejected command (HTTP \(response.statusCode))"
                     self.motion = nil; self.activeAction = nil
                 }
+                if self.approachActive && command.action != "stop" {
+                    if confirmedMovement { self.approachAck = .now }
+                    else {
+                        self.driveError = self.driveError ?? "Pi did not confirm the movement command"
+                        self.motion = nil; self.activeAction = nil
+                    }
+                }
                 if command.action == "stop" { self.motion = nil; self.activeAction = nil }
+                if self.approachActive && self.motion == nil {
+                    self.endApproach(self.driveError ?? "Stopped · Pi ended the movement command")
+                }
             }
         }
         controlRequest?.resume()
@@ -281,11 +372,16 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
             search.delegate = self; browser = search; search.startBrowsingForPeers()
         }
         status = "Looking for the other phone"
-        controlTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.sendControl() }
+        controlTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.tickApproach()
+            self.sendControl()
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.upload() }
     }
 
     func stop() {
+        endApproachPreview()
         stopMotion()
         controlTimer?.invalidate(); controlTimer = nil
         motion = nil; activeAction = nil
@@ -303,7 +399,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         ni?.delegate = nil; ni?.invalidate(); ni = nil
         sharedARAttached = false
         lidar.releaseUWB()
-        remoteInspection = false
+        remoteInspection = false; remoteApproach = false
         peerToken = nil
         clear()
         connected = false; remoteRound = nil
@@ -424,6 +520,7 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                 self.advertiser?.stopAdvertisingPeer(); self.browser?.stopBrowsingForPeers()
                 self.peerName = peerID.displayName; self.sendToken()
                 if self.inspectionActive { self.sendMessage(kind: "inspection", value: true) }
+                if self.approachActive { self.sendMessage(kind: "approach", value: true) }
                 if !self.isRobot, let round = self.localRound { self.publishRound(round) }
             }
             else if state == .notConnected { self.stop(); self.status = "Disconnected. Start both phones again." }
@@ -444,6 +541,11 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
                 case "inspection" where !self.isRobot:
                     self.remoteInspection = try JSONDecoder().decode(Bool.self, from: message.payload)
                     if self.remoteInspection { self.stopMotion() }
+                case "approach" where !self.isRobot:
+                    self.remoteApproach = try JSONDecoder().decode(Bool.self, from: message.payload)
+                    if self.remoteApproach && self.activeAction != nil { self.stopMotion() }
+                case "approachStop" where self.isRobot:
+                    if try JSONDecoder().decode(Bool.self, from: message.payload) { self.stopMotion() }
                 case "drive" where !self.isRobot:
                     self.driveStatus = try JSONDecoder().decode(DriveStatus.self, from: message.payload)
                     self.driveUpdated = .now

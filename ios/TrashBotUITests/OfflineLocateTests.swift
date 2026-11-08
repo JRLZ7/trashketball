@@ -33,6 +33,24 @@ final class OfflineLocateTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Get connected"].waitForExistence(timeout: 5))
     }
 
+    func testGuidedApproachCannotStartWithoutSensors() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-role", "Robot"]
+        app.launch()
+        app.tabBars.buttons["Locate"].tap()
+        let preview = app.buttons["Preview guidance"]
+        for _ in 0..<3 {
+            if preview.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(app.staticTexts["Guided approach"].exists)
+        XCTAssertTrue(preview.exists)
+        XCTAssertFalse(preview.isEnabled)
+        XCTAssertFalse(app.buttons["Start guided approach"].isEnabled)
+        app.tabBars.buttons["Connect"].tap()
+        XCTAssertTrue(app.navigationBars["Get connected"].waitForExistence(timeout: 5))
+    }
+
     func testPlayerLocateOpensWithoutConnections() {
         let app = XCUIApplication()
         app.launchArguments = ["-role", "User"]

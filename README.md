@@ -74,3 +74,6 @@ On the can phone, open **Lab** for a camera/depth overlay, AR tracking, automati
 See [LiDAR Lab setup, box test and limitations](docs/lidar-lab.md). The phone shares one ARKit session between depth, preview and UWB camera assistance. Physical-device testing is required for sensor accuracy and UWB coexistence; Simulator only verifies unavailable states and navigation.
 
 The experimental **Lab → Local map** combines LiDAR floor/obstacle cells with a fresh UWB player target in the shared AR session. It runs on the iPhone and supports a standalone two-phone walk test without the Pi. The dashed target line is a bearing, not a planned route. See [the map walk test](docs/lidar-lab.md#two-phone-walk-test-no-pi-required).
+
+
+**Locate → Guided approach** on the can phone now previews direct UWB steering with live LiDAR checks, then can send simple forward/left/right/stop commands to the existing Pi API. It stops on close obstacles, missing floor coverage, arrival, stale tracking or control failures, and requires an explicit restart. Preview works without the Pi; actual movement requires a connected, stopped motor bridge. The older player-side Summon remains labeled **Legacy Summon** because it does not use LiDAR. See [guided approach setup and testing](docs/guided-approach.md).

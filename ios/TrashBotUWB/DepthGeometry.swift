@@ -149,3 +149,40 @@ enum PlayerMapGeometry {
         return MapPlayerTarget(position: p, timestamp: timestamp, approximate: true)
     }
 }
+
+struct ApproachDecision: Equatable {
+    var action: String = "stop"
+    var speed: Int = 0
+    var message: String = "Waiting for live UWB and LiDAR"
+}
+
+// Reactive steering in the mounted phone's frame; no world-map target conversion.
+enum GuidedApproach {
+    static func evaluate(distance: Float?, angle: Float?, uwbAge: TimeInterval?, connected: Bool,
+                         depthAge: TimeInterval, trackingNormal: Bool, floorReady: Bool,
+                         corridor: CorridorEstimate, targetMeters: Int, previousAction: String?) -> ApproachDecision {
+        func stop(_ text: String) -> ApproachDecision { ApproachDecision(message: text) }
+        guard connected, let age = uwbAge, age.isFinite, age >= 0, age < 0.25,
+              let distance, distance.isFinite, distance > 0, distance <= 30,
+              let angle, angle.isFinite, abs(angle) <= .pi else { return stop("Stop · UWB distance or bearing unavailable/stale") }
+        guard (1...3).contains(targetMeters) else { return stop("Stop · invalid stopping distance") }
+        if distance <= Float(targetMeters)+0.15 { return stop("Arrived · at selected phone-to-phone distance") }
+        guard depthAge.isFinite, depthAge >= 0, depthAge < 0.4, trackingNormal, floorReady else {
+            return stop("Stop · waiting for recent LiDAR and Normal tracking")
+        }
+        if let obstacle = corridor.nearestObstacle {
+            guard obstacle.isFinite, obstacle > 0 else { return stop("Stop · invalid obstacle reading") }
+            if obstacle < 0.75 { return stop("Blocked · obstacle within 75 cm") }
+        }
+        guard corridor.observedFreeDistance.isFinite, corridor.observedFreeDistance >= 0.65 else {
+            return stop("Stop · insufficient observed floor ahead")
+        }
+        // Turn until within ~6°, then allow forward motion until error exceeds ~13°.
+        let turning = previousAction == "left" || previousAction == "right"
+        if abs(angle) > (turning ? 0.10 : 0.22) {
+            return ApproachDecision(action: angle > 0 ? "right" : "left", speed: 45,
+                                    message: angle > 0 ? "Turn right toward player" : "Turn left toward player")
+        }
+        return ApproachDecision(action: "forward", speed: 50, message: "Forward · observed lane clear")
+    }
+}
