@@ -25,6 +25,10 @@ BEARING_SIGN = 1
 BEARING_OFFSET_DEG = 0.0
 INVERT_LEFT = False
 INVERT_RIGHT = False
+# Initial correction for observed right drift: slow the faster left wheel.
+# Keep gains <= 1 so trim can never exceed the driver's 150/255 PWM ceiling.
+LEFT_MOTOR_GAIN = 0.90
+RIGHT_MOTOR_GAIN = 1.00
 BEAM_ACTIVE_HIGH = False
 
 
@@ -196,7 +200,8 @@ def main():
         controller = Controller(drive, calibrated=ENABLE_SUMMON,
                                 bearing_sign=BEARING_SIGN,
                                 bearing_offset=math.radians(BEARING_OFFSET_DEG),
-                                invert_left=INVERT_LEFT, invert_right=INVERT_RIGHT)
+                                invert_left=INVERT_LEFT, invert_right=INVERT_RIGHT,
+                                left_gain=LEFT_MOTOR_GAIN, right_gain=RIGHT_MOTOR_GAIN)
         scorer = BeamScorer(pin=24)
         if ENABLE_BEAM:
             try:

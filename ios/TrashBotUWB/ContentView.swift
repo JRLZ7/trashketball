@@ -283,7 +283,7 @@ struct ContentView: View {
                 Button("Stop", role: .destructive) { model.stopMotion() }
                     .buttonStyle(.bordered).disabled(!model.running)
             }
-            Text("Preview works without the Pi. Brief missing measurements pause the motors; stable readings can resume within 2 s. Obstacles, connection failures and longer gaps require Start again. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Driving sends 100% commands for forward, detours and turns, scaled by the Pi driver's PWM maximum. Side/rear blind spots remain; keep space around the can for pivots.")
+            Text("Preview works without the Pi. Brief missing measurements pause the motors; stable readings can resume within 2 s. A blocked/unobserved route waits stopped for up to 8 s for confirmed clearance. Close obstacles and connection failures require Start again. Automatic reversing is unavailable without rear clearance sensing. Connect both phones with camera assistance on; mount the rear camera forward and tilted down to see nearby floor. The measured camera mount is 25 cm above the floor, with automatic floor confirmation. Forward commands use up to 100% with small left/right heading corrections; pivots taper to 35–55%. Pi motor trim and the 150/255 PWM cap still apply. Side/rear blind spots remain; keep space around the can for pivots.")
                 .font(.caption).foregroundStyle(.secondary)
         }.card()
     }

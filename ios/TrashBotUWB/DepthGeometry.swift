@@ -252,6 +252,9 @@ enum PlayerMapGeometry {
 
 struct ApproachDecision: Codable, Equatable {
     var recoverableSensorWait = false
+    var recoveryTimeout: TimeInterval = 2
+    var leftPercent: Int?
+    var rightPercent: Int?
     var action: String = "stop"
     var speed: Int = 0
     var message: String = "Waiting for live UWB and LiDAR"
@@ -370,6 +373,9 @@ struct LocalAvoidanceNavigator {
     private var referenceWorld: UUID?
     private var clearFrames = 0
     private var lastClearFrame: TimeInterval = -.infinity
+    private var lastYaw: Float?
+    private var lastYawTime: TimeInterval?
+    private var yawRate: Float = 0
     var waypoint: SIMD2<Float>? { detour?.waypoint }
     mutating func reset() { self = LocalAvoidanceNavigator() }
 
@@ -378,7 +384,7 @@ struct LocalAvoidanceNavigator {
                            scan: AvoidanceScan, fallbackCorridor: CorridorEstimate,
                            yaw: Float?, position: SIMD2<Float>?, world: UUID, frameTime: TimeInterval,
                            now: TimeInterval, targetMeters: Int, previousAction: String?, driving: Bool) -> ApproachDecision {
-        func stop(_ text: String, sensorWait: Bool = false) -> ApproachDecision { ApproachDecision(recoverableSensorWait:sensorWait,message:text) }
+        func stop(_ text: String, sensorWait: Bool = false, timeout: TimeInterval = 2) -> ApproachDecision { ApproachDecision(recoverableSensorWait:sensorWait,recoveryTimeout:timeout,message:text) }
         guard connected, let age = uwbAge, age.isFinite, age >= 0, age < 0.25,
               let distance, distance.isFinite, distance > 0, distance <= 30,
               let angle, angle.isFinite, abs(angle) <= .pi else {
@@ -397,6 +403,14 @@ struct LocalAvoidanceNavigator {
             return stop("Stop · AR session changed; start again")
         }
         referenceWorld = world
+        if frameTime != lastYawTime {
+            if let old = lastYaw, let time = lastYawTime, frameTime-time >= 0.02, frameTime-time <= 0.6 {
+                let delta = atan2(sin(yaw-old),cos(yaw-old))
+                let measured = max(-4,min(4,delta/Float(frameTime-time)))
+                yawRate = 0.5*yawRate+0.5*measured
+            } else { yawRate = 0 }
+            lastYaw = yaw; lastYawTime = frameTime
+        }
         if let near = scan.nearestRadialObstacle, !near.isFinite || near < 0.35 {
             return stop("Stop · obstacle within 35 cm; too close to pivot")
         }
@@ -421,15 +435,15 @@ struct LocalAvoidanceNavigator {
                 let remaining = atan2(simd_dot(delta,right),simd_dot(delta,forward))
                 guard let lane = scan.nearestLane(to:remaining), lane.isOpen,
                       abs(lane.angle-remaining) <= .pi/12 else {
-                    return stop("Stop · detour became blocked or unobserved")
+                    return stop("Wait · detour blocked or not observed; motors stopped", sensorWait:true, timeout:8)
                 }
-                return Self.steer(angle:remaining,lane:lane,avoiding:true,previousAction:previousAction,forwardOpen:forwardOpen)
+                return Self.steer(angle:remaining,lane:lane,avoiding:true,previousAction:previousAction,forwardOpen:forwardOpen,yawRate:yawRate)
             }
         }
         if goalOpen, let lane = goalLane {
             preferredSide = nil
             // The lane certifies clearance; its 15° center is not the actual target bearing.
-            return Self.steer(angle:angle,lane:lane,avoiding:false,previousAction:previousAction,forwardOpen:forwardOpen)
+            return Self.steer(angle:angle,lane:lane,avoiding:false,previousAction:previousAction,forwardOpen:forwardOpen,yawRate:yawRate)
         }
         let candidates = scan.lanes.filter { lane in
             lane.isOpen && abs(lane.angle-angle) < .pi/2 &&
@@ -447,25 +461,36 @@ struct LocalAvoidanceNavigator {
                fallbackCorridor.observedFreeDistance < 0.65 {
                 return stop(String(format:"Stop · floor visible only from %.2f m; tilt camera farther down",first))
             }
-            return stop("Stop · no observed route; inspect or scan left/right")
+            let hasObstacle = scan.lanes.contains { $0.corridor.nearestObstacle != nil }
+            return stop(hasObstacle ? "Wait · routes blocked or unobserved; motors stopped" :
+                "Wait · routes not observed; camera cannot confirm clearance", sensorWait:true, timeout:8)
         }
         if abs(chosen.angle) > 0.05 { preferredSide = chosen.angle > 0 ? 1 : -1 }
         let direction = SIMD2(sin(yaw+chosen.angle),-cos(yaw+chosen.angle))
         detour = Detour(waypoint:position+direction*0.6,origin:position,started:now)
         clearFrames = 0; lastClearFrame = frameTime
-        return Self.steer(angle:chosen.angle,lane:chosen,avoiding:true,previousAction:previousAction,forwardOpen:forwardOpen)
+        return Self.steer(angle:chosen.angle,lane:chosen,avoiding:true,previousAction:previousAction,forwardOpen:forwardOpen,yawRate:yawRate)
     }
-    private static func steer(angle: Float, lane: AvoidanceLane, avoiding: Bool, previousAction: String?, forwardOpen: Bool) -> ApproachDecision {
+    private static func steer(angle: Float, lane: AvoidanceLane, avoiding: Bool, previousAction: String?, forwardOpen: Bool, yawRate: Float) -> ApproachDecision {
         let turning = (previousAction == "left" && angle < 0) || (previousAction == "right" && angle > 0)
         let degrees = angle*180/Float.pi
-        if abs(angle) > (turning ? 0.10 : 0.22) || (!forwardOpen && abs(angle) > 0.02) {
+        // Account for a short actuation/observation lag when already rotating toward alignment.
+        let settleAngle = min(Float(0.25),max(Float(0.10),abs(yawRate)*0.15))
+        if abs(angle) > (turning ? settleAngle : 0.22) || (!forwardOpen && abs(angle) > 0.02) {
             let side = angle > 0 ? "right" : "left"
             let text = String(format:"%@turn %@ %.0f°",avoiding ? "Avoid obstacle · " : "",side,abs(degrees))
-            return ApproachDecision(action:angle > 0 ? "right" : "left",speed:100,message:text,
+            // Slow pivots, taper near alignment, and damp rotation already toward the target.
+            let toward = max(0,yawRate*(angle > 0 ? 1 : -1))
+            let raw = max(35,min(55,35+abs(degrees)*0.4-toward*8))
+            let speed = Int((raw/5).rounded())*5
+            return ApproachDecision(action:angle > 0 ? "right" : "left",speed:speed,message:text,
                 turnDegrees:degrees,selectedLaneDegrees:lane.angle*180/Float.pi,avoiding:avoiding)
         }
         guard forwardOpen else { return ApproachDecision(message:"Stop · current forward lane is not clear") }
-        return ApproachDecision(action:"forward",speed:100,
+        // Gentle PD heading correction while progressing, instead of repeated full-power pivots.
+        // Positive error means turn right: slow the right wheel. Never boost above the cap.
+        let trim = Int((max(-25,min(25,angle*100-yawRate*8))/5).rounded())*5
+        return ApproachDecision(leftPercent:100-max(0,-trim),rightPercent:100-max(0,trim),action:"forward",speed:100,
             message:avoiding ? "Detour forward · rechecking clearance" : "Forward · path toward player clear",
             turnDegrees:0,selectedLaneDegrees:lane.angle*180/Float.pi,avoiding:avoiding)
     }

@@ -169,14 +169,14 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         }
         if approachDecision.action == "stop" {
             guard approachDecision.recoverableSensorWait else { endApproach(approachDecision.message); return }
-            sensorHold.pause(at:now.timeIntervalSince1970)
-            approachNote = "Paused · " + approachDecision.message + "; waiting up to 2 s for stable readings."
-            if sensorHold.expired(at:now.timeIntervalSince1970) { endApproach("Stopped · sensor readings did not recover within 2 s"); return }
+            sensorHold.pause(at:now.timeIntervalSince1970,timeout:approachDecision.recoveryTimeout)
+            approachNote = "Paused · " + approachDecision.message + String(format:"; waiting up to %.0f s for a confirmed clear route. Stop before manual reversing.",sensorHold.timeout)
+            if sensorHold.expired(at:now.timeIntervalSince1970) { endApproach("Stopped · readings or observed route did not recover"); return }
             if motion?.action != "stop" && (motion != nil || activeAction != nil) { haltGuidanceMotors() }
             return
         }
         if sensorHold.began != nil {
-            guard !sensorHold.expired(at:now.timeIntervalSince1970) else { endApproach("Stopped · sensor recovery timed out"); return }
+            guard !sensorHold.expired(at:now.timeIntervalSince1970) else { endApproach("Stopped · clearance recovery timed out"); return }
             guard motion == nil, controlRequest == nil, driveStatus?.state == "stopped",
                   driveStatus?.commandID == nil, driveStatus?.left == 0, driveStatus?.right == 0 else { return }
             guard sensorHold.ready(depth:lidar.snapshot.timestamp.timeIntervalSince1970,
@@ -189,9 +189,10 @@ final class RangingModel: NSObject, ObservableObject, NISessionDelegate, MCSessi
         }
         // Finish the current request before changing IDs. Canceling every turn starves acknowledgements.
         guard controlRequest == nil else { return }
-        if motion?.action != approachDecision.action || motion?.speed != approachDecision.speed {
-            motion = MotionCommand(client_id: deviceID, sequence: 0, sent_at: 0,
-                action: approachDecision.action, targetMeters: approachTarget, speed: approachDecision.speed)
+        let desired = MotionCommand(decision:approachDecision,clientID:deviceID,target:approachTarget)
+        if motion?.action != desired.action || motion?.speed != desired.speed ||
+            motion?.leftPercent != desired.leftPercent || motion?.rightPercent != desired.rightPercent {
+            motion = desired
             activeAction = approachDecision.action
             sendControl()
         }

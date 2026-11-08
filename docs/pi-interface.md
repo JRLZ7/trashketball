@@ -26,7 +26,7 @@ Example control packet:
 }
 ```
 
-Actions: `forward`, `reverse`, `left`, `right`, `summon`, `stop`. Speed is percent of the driver's command scale (1–100 allowed); the driver further applies its existing 150/255 PWM duty cap. App manual range is 20–100, default 100; phone-side guided forward/detour/pivot commands are 100. Legacy Summon uses its requested speed without the former 80/70 reductions. At 100%, both active channels reach the 150/255 driver cap; stops remain zero. `targetMeters` is 1, 2 or 3. `sent_at` is Unix seconds. For motion it must be within [-250 ms future, 300 ms old] of the Pi clock. Keep network time enabled.
+Actions: `forward`, `reverse`, `left`, `right`, `summon`, `stop`, `drive`. Speed is percent of the driver's command scale (1–100 allowed); the driver further applies its existing 150/255 PWM duty cap. App manual range is 20–100, default 100; guided pivots taper 35–55%; forward corrections use per-wheel requests up to 100. Legacy Summon uses its requested speed without the former 80/70 reductions. At 100%, each active channel reaches the 150/255 driver cap multiplied by its motor gain; stops remain zero. `targetMeters` is 1, 2 or 3. `sent_at` is Unix seconds. For motion it must be within [-250 ms future, 300 ms old] of the Pi clock. Keep network time enabled.
 
 A hold/Summon uses one UUID and renews it every 100 ms, with increasing sequence and a new timestamp. The Pi expires the lease after 300 ms. The app uses a separate HTTP task for control, independent of telemetry; only one renewal is outstanding. New actions get new IDs. Release/Stop uses a new ID. Any authenticated valid Stop takes precedence, including with skewed clocks or an older sequence. Completed, stopped, tracking-lost or timed-out command IDs cannot restart (bounded recent-ID cache, plus sequence ordering for the active owner). Another client cannot take over active motion; it may Stop, then issue a new command.
 
@@ -91,10 +91,24 @@ Authenticated `POST /inspection` with `{"enabled":true}` stops motion immediatel
 
 ## Phone-side guided approach
 
-The can phone's Locate screen has an experimental Guided approach. It makes decisions on iPhone from the existing relative Locate bearing/range and a live LiDAR left/right clearance fan; it does not use the cyan world-map target for steering. Short local detours use ARKit only to measure waypoint progress and remaining turn angle. It sends existing `forward`, `left`, `right`, `stop` actions through `/control`, owned by the can app's client ID. No server changes, ML inference, global map planner or new flags are needed. The Pi continues to enforce ownership, sequence/expiry and 300 ms command watchdog.
+The player phone's Locate screen requests experimental Guided approach from the can. It makes decisions on iPhone from the existing relative Locate bearing/range and a live LiDAR left/right clearance fan; it does not use the cyan world-map target for steering. Short local detours use ARKit only to measure waypoint progress and remaining turn angle. It sends `drive`, `left`, `right`, `stop` actions through `/control`, owned by the can app's client ID. Update the Pi server for differential `drive` support. No ML inference, global map planner or new flags are needed. The Pi continues to enforce ownership, sequence/expiry and 300 ms command watchdog.
 
-Guidance ticks every 100 ms; at most one control renewal is outstanding. Action changes use new IDs. The can announces guided activity to the player so manual/legacy Summon starts are disabled while guided driving is active. Player Stop still sends both an HTTP Stop and a peer stop request. Inspection Lab is mutually exclusive; opening it ends guidance before requesting the existing hold. Disconnect, app background, leaving Locate, a Pi error/rejected/ended command, stale UWB/depth, blocked/unknown chosen route, avoidance timeout, AR reset or arrival ends movement and never automatically rearms it. UI preview can continue updating after a latched stop, but only Start guided approach can arm again.
+Guidance ticks every 100 ms; at most one control renewal is outstanding. Action changes use new IDs. The can announces guided activity to the player so manual/legacy Summon starts are disabled while guided driving is active. Player Stop still sends both an HTTP Stop and a peer stop request. Inspection Lab is mutually exclusive; opening it ends guidance before requesting the existing hold. Disconnect, app background, a Pi error/rejected/ended command, prolonged stale UWB/depth or blocked/unknown chosen route, avoidance timeout, AR reset or arrival ends the run. Only bounded sensor/route waits can resume automatically after stable measurements. UI preview can continue updating after a final stop, but only Start guided approach can arm again.
 
 See [the guided approach test](guided-approach.md) for thresholds and physical limitations. Legacy Pi-side Summon is unchanged and still has no LiDAR checks.
 
 Guided output is sent from the can phone by Start guided approach; merely previewing never sends movement commands. The app card shows commanded L/R percentages from Pi replies. PWM is capped at 150/255 in the actual driver, including commands exceeding 100% passed directly to Drive (the API rejects >100).
+
+## Differential wheel commands and trim
+
+`drive` requires both `leftPercent` and `rightPercent`, each finite numeric values in [-100,100]; positive is forward, negative reverse. For example:
+
+```json
+{"id":"new-uuid","client_id":"can-phone","sequence":10,"sent_at":1794110000,"action":"drive","targetMeters":1,"speed":100,"leftPercent":100,"rightPercent":85}
+```
+
+Use a real current `sent_at`. The `speed` field is still validated; `drive` uses the two wheel percentages directly. Changing either wheel percentage requires a new command UUID; lease renewal cannot mutate outputs. Ownership, expiry, inspection and watchdog checks are unchanged. Stop accepts the existing packet shape. `drive` is used for phone-computed heading corrections; Pi performs no navigation work.
+
+`LEFT_MOTOR_GAIN = 0.90`, `RIGHT_MOTOR_GAIN = 1.00` in `pi/server.py` compensate for observed rightward drift. Gains multiply every wheel request before wiring inversion and the 150/255 PWM ceiling. Status `left`/`right` includes gains. Controller construction rejects gains <=0, >1, booleans and non-finite values.
+
+Brief missing sensors get a stopped recovery window of 2 s; a blocked/unobserved route gets up to 8 s. Recovery requires three new clear depth frames, fresh UWB and a confirmed zero-output Stop. Close obstacles, Pi errors, watchdog timeouts and AR resets remain final stops. Switching tabs alone does not end guidance. The forward ultrasonic sensor provides no rear protection, so automatic reversing remains disabled.

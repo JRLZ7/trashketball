@@ -127,7 +127,7 @@ class ReceiverTests(unittest.TestCase):
             commands = [dict(id='guidance-'+action, client_id='robot-guidance', sequence=i+1,
                              sent_at=0, action=action, speed=0 if action == 'stop' else 100, targetMeters=1)
                         for i, action in enumerate(('forward', 'left', 'right', 'stop'))]
-        self.assertEqual([c['action'] for c in commands], ['forward', 'left', 'right', 'stop'])
+        self.assertEqual([c['action'] for c in commands], (['drive', 'left', 'right', 'stop'] if fixture else ['forward', 'left', 'right', 'stop']))
         previous_factory, previous_controller = Device.pin_factory, receiver.controller
         Device.pin_factory = MockFactory(pin_class=MockPWMPin)
         clock = [1000.0]
@@ -139,15 +139,24 @@ class ReceiverTests(unittest.TestCase):
                     command['sent_at'] = time.time()
                     status, reply = self.call('/control', command)
                     self.assertEqual(status, 200)
-                    left, right = expected[command['action']]
-                    self.assertEqual((reply['drive']['left'],reply['drive']['right']), (left*100,right*100))
+                    if command['action'] == 'drive':
+                        left, right = command['leftPercent']/100, command['rightPercent']/100
+                    else:
+                        l, r = expected[command['action']]
+                        left, right = l*command['speed']/100, r*command['speed']/100
+                    self.assertAlmostEqual(reply['drive']['left'],left*100)
+                    self.assertAlmostEqual(reply['drive']['right'],right*100)
                     self.assertAlmostEqual(drive._left.value, left*MAX_DUTY)
                     self.assertAlmostEqual(drive._right.value, right*MAX_DUTY)
                     self.assertLessEqual(abs(drive._left.value),150/255)
                     self.assertLessEqual(abs(drive._right.value),150/255)
                     self.assertEqual(reply['drive']['commandID'], None if command['action'] == 'stop' else command['id'])
-                move = {**commands[0], 'id':'watchdog-max', 'sequence':5, 'sent_at':time.time()}
+                receiver.controller = Controller(drive, clock=lambda: clock[0], left_gain=.9)
+                move = {**commands[0], 'action':'drive', 'leftPercent':100, 'rightPercent':85,
+                        'speed':100, 'id':'watchdog-max', 'sequence':5, 'sent_at':time.time()}
                 self.assertEqual(self.call('/control', move)[0],200)
+                self.assertAlmostEqual(drive._left.value,.9*MAX_DUTY)
+                self.assertAlmostEqual(drive._right.value,.85*MAX_DUTY)
                 clock[0] += 0.301
                 receiver.controller.tick()
                 self.assertEqual((drive._left.value,drive._right.value),(0,0))

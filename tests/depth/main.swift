@@ -377,7 +377,9 @@ for time in [1.8,2.0,2.2] { _ = staleWrongFloor.update(candidate:actualGround,tr
 assert(abs(staleWrongFloor.y!) < 0.001, "An expired wrong plane must not permanently reject the actual higher floor")
 print("Expired wrong floor can recover automatically without UWB recalibration")
 
-assert(detourChoice.speed == 100 && afterTurn.speed == 100 && rejoined.speed == 100, "Guidance sends maximum commands during turns, detours and direct approach")
+for decision in [detourChoice,afterTurn,rejoined] {
+    assert(decision.action == "forward" ? decision.speed == 100 : (35...55).contains(decision.speed), "Pivots taper while forward commands retain full scale")
+}
 
 // A bearing near a lane boundary must not become a quantized 15-degree pivot.
 navigator.reset()
@@ -397,3 +399,34 @@ assert(!navigation(&navigator,scan:openScan,distance:1).recoverableSensorWait, "
 navigator.reset()
 assert(!navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes,nearestRadialObstacle:0.2)).recoverableSensorWait, "A blocked route must not auto-resume")
 print("Measured-bearing steering and recoverable sensor-gap classification passed")
+
+// Differential steering corrects small drift without alternating pivot actions.
+navigator.reset()
+let correctRight = navigation(&navigator,scan:openScan,angle:0.10)
+assert(correctRight.action == "forward" && correctRight.leftPercent == 100 && correctRight.rightPercent == 90)
+navigator.reset()
+let correctLeft = navigation(&navigator,scan:openScan,angle:-0.10)
+assert(correctLeft.leftPercent == 90 && correctLeft.rightPercent == 100)
+navigator.reset()
+let noCorrection = navigation(&navigator,scan:openScan,angle:0)
+assert(noCorrection.leftPercent == 100 && noCorrection.rightPercent == 100)
+navigator.reset()
+let slowNear = navigation(&navigator,scan:openScan,angle:0.24)
+navigator.reset()
+let slowFar = navigation(&navigator,scan:openScan,angle:0.9)
+assert(slowNear.speed < slowFar.speed && slowFar.speed <= 55)
+_ = navigation(&navigator,scan:openScan,angle:0.9,yaw:0,time:0)
+let damped = navigation(&navigator,scan:openScan,angle:0.9,yaw:0.4,time:0.2,previous:"right")
+assert(damped.speed < slowFar.speed, "Existing rotation toward the target damps pivot output")
+navigator.reset()
+_ = navigation(&navigator,scan:openScan,angle:0,yaw:0,time:0)
+let drift = navigation(&navigator,scan:openScan,angle:0,yaw:0.4,time:0.2)
+assert(drift.leftPercent! < drift.rightPercent!, "Rightward measured rotation is countered before a large bearing error develops")
+navigator.reset()
+let unobserved = navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes.map { AvoidanceLane(angle:$0.angle,corridor:CorridorEstimate()) }))
+assert(unobserved.action == "stop" && unobserved.recoverableSensorWait && unobserved.recoveryTimeout == 8)
+assert(unobserved.message.contains("not observed"))
+navigator.reset()
+let closeObstacle = navigation(&navigator,scan:AvoidanceScan(lanes:openScan.lanes,nearestRadialObstacle:0.2))
+assert(closeObstacle.action == "stop" && !closeObstacle.recoverableSensorWait)
+print("Tapered/damped pivots, differential drift correction, bounded route waits and close-obstacle stops passed")

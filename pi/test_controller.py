@@ -136,5 +136,36 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(self.controller.state,'fault')
         self.assertIsNone(self.controller.command)
 
+    def test_differential_heading_command_and_immutable_lease(self):
+        self.controller.control(self.cmd('drive', leftPercent=100, rightPercent=85))
+        self.assertEqual(self.drive.outputs[-1], (100,85))
+        with self.assertRaises(MotionError):
+            self.controller.control(self.cmd('drive', leftPercent=90, rightPercent=100))
+        self.controller.control(self.cmd('drive', id='new-direction', leftPercent=90, rightPercent=100))
+        self.assertEqual(self.drive.outputs[-1], (90,100))
+        self.clock.advance(.301); self.controller.tick()
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+        with self.assertRaises(MotionError):
+            self.controller.control(self.cmd('drive', id='new-direction', leftPercent=90, rightPercent=100))
+
+    def test_differential_rejects_invalid_outputs(self):
+        for bad in (None, True, float('nan'), float('inf'), 101, -101, '50'):
+            with self.subTest(bad=bad), self.assertRaises(MotionError):
+                self.controller.control(self.cmd('drive', leftPercent=bad, rightPercent=100))
+        self.assertEqual(self.drive.outputs[-1], (0,0))
+
+    def test_motor_trim_reduces_faster_left_wheel_without_raising_cap(self):
+        controller = Controller(self.drive, clock=self.clock, wall=self.clock, left_gain=.9)
+        command = self.cmd(); command['speed'] = 100
+        controller.control(command)
+        self.assertEqual(self.drive.outputs[-1], (90,100))
+        self.assertEqual((controller.status()['left'],controller.status()['right']), (90,100))
+        controller.control(self.cmd('drive',id='trimmed',leftPercent=80,rightPercent=100))
+        self.assertEqual(self.drive.outputs[-1],(72,100))
+        controller.control(self.cmd('stop',id='stop-trim'))
+        self.assertEqual(self.drive.outputs[-1],(0,0))
+        for bad in (1.1, 0, -1, float('nan'), True):
+            with self.assertRaises(ValueError): Controller(self.drive, left_gain=bad)
+
 
 if __name__ == '__main__': unittest.main()

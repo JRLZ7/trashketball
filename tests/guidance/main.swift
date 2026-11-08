@@ -48,3 +48,15 @@ assert(!GuidancePiConfirmation.stopped(reply:reply,httpCode:200,failed:false), "
 reply.error = nil; reply.drive?.left = 100
 assert(!GuidancePiConfirmation.stopped(reply:reply,httpCode:200,failed:false))
 print("Pi confirmation: matching live command, latency, HTTP errors and confirmed zero-output Stop checks passed")
+
+var routeHold = GuidanceSensorHold()
+routeHold.pause(at:10,timeout:8)
+assert(!routeHold.expired(at:17.9) && routeHold.expired(at:18))
+routeHold.pause(at:15,timeout:8)
+assert(routeHold.expired(at:18), "Waiting must not extend the route hold deadline")
+routeHold.reset(); routeHold.pause(at:20,timeout:8); routeHold.pause(at:20.5,timeout:2)
+assert(routeHold.expired(at:22), "A sensor failure shortens a route wait; never extends it")
+let differential = MotionCommand(decision:ApproachDecision(leftPercent:100,rightPercent:85,action:"forward",speed:100),clientID:"can",target:2)
+let differentialRoundTrip = try decoder.decode(MotionCommand.self,from:encoder.encode(differential))
+assert(differentialRoundTrip.action == "drive" && differentialRoundTrip.leftPercent == 100 && differentialRoundTrip.rightPercent == 85)
+print("Bounded route wait and production differential command encoding passed")

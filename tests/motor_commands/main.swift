@@ -13,7 +13,11 @@ let actions = ["forward","left","right","stop"]
 let commands = actions.enumerated().map { index, action -> MotionCommand in
     let d = decision(for:action)
     assert(d.action == action)
-    assert(action == "stop" ? d.speed == 0 : d.speed == 100)
-    return MotionCommand(client_id:"robot-guidance-swift-fixture",sequence:index+1,sent_at:0,action:d.action,targetMeters:1,speed:d.speed)
+    if action == "stop" { assert(d.speed == 0) }
+    else if action == "forward" { assert(d.speed == 100) }
+    else { assert((35...55).contains(d.speed)) }
+    var command = MotionCommand(decision:d,clientID:"robot-guidance-swift-fixture",target:1)
+    command.sequence = index+1
+    return command
 }
 print(String(data:try JSONEncoder().encode(commands),encoding:.utf8)!)

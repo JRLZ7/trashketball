@@ -14,7 +14,10 @@ class Controller:
 
     def __init__(self, drive=None, *, clock=time.monotonic, wall=time.time,
                  calibrated=False, bearing_sign=1, bearing_offset=0,
-                 invert_left=False, invert_right=False):
+                 invert_left=False, invert_right=False, left_gain=1.0, right_gain=1.0):
+        if any(type(g) not in (int, float) or not math.isfinite(g) or not 0 < g <= 1 for g in (left_gain, right_gain)):
+            raise ValueError('Motor gains must be greater than zero and at most 1')
+        self.left_gain, self.right_gain = left_gain, right_gain
         self.drive, self.clock, self.wall = drive, clock, wall
         self.calibrated = calibrated
         self.sign, self.offset = bearing_sign, bearing_offset
@@ -38,6 +41,7 @@ class Controller:
                     right=self.right, commandID=self.command['id'] if self.command else None)
 
     def _output(self, left, right):
+        left, right = left*self.left_gain, right*self.right_gain
         self.left, self.right = left, right
         if self.drive and (left, right) != self.last_output:
             try:
@@ -102,7 +106,7 @@ class Controller:
         if not isinstance(data, dict):
             raise MotionError('Expected command object')
         action = data.get('action')
-        if action not in ('forward', 'reverse', 'left', 'right', 'summon', 'stop'):
+        if action not in ('forward', 'reverse', 'left', 'right', 'summon', 'stop', 'drive'):
             raise MotionError('Unknown action')
         if not isinstance(data.get('client_id'), str) or not 1 <= len(data['client_id']) <= 100:
             raise MotionError('Missing client ID')
@@ -138,6 +142,11 @@ class Controller:
         speed = data.get('speed', 100)
         if type(speed) not in (int, float) or not math.isfinite(speed) or not 0 < speed <= 100:
             raise MotionError('Speed must be greater than zero and at most 100 percent')
+        if action == 'drive':
+            for key in ('leftPercent', 'rightPercent'):
+                value = data.get(key)
+                if type(value) not in (int, float) or not math.isfinite(value) or not -100 <= value <= 100:
+                    raise MotionError('Differential drive requires finite leftPercent/rightPercent within -100..100')
         target = data.get('targetMeters', 2)
         if type(target) is not int or target not in (1, 2, 3):
             raise MotionError('Target must be 1, 2 or 3 m')
@@ -149,12 +158,13 @@ class Controller:
         if self.command and self.command['id'] == data['id']:
             # Lease renewal cannot mutate an existing command.
             if any(self.command[k] != data.get(k, default) for k, default in
-                   [('action', None), ('speed', 100), ('targetMeters', 2)]):
+                   [('action', None), ('speed', 100), ('targetMeters', 2), ('leftPercent', None), ('rightPercent', None)]):
                 raise MotionError('Use a new ID to change movement')
         elif self.command:
             self.stop('New command')
         self.owner, self.sequence = data['client_id'], data['sequence']
-        self.command = dict(id=data['id'], action=action, speed=speed, targetMeters=target)
+        self.command = dict(id=data['id'], action=action, speed=speed, targetMeters=target,
+                            leftPercent=data.get('leftPercent'), rightPercent=data.get('rightPercent'))
         self.renewed = self.clock()
         self.tick()
         return self.status()
@@ -185,6 +195,9 @@ class Controller:
                 # the pivot branch rather than silently reducing either motor.
                 left, right = speed, speed
                 self.state, self.message = 'approaching', 'Approaching player'
+        elif action == 'drive':
+            left, right = self.command['leftPercent'], self.command['rightPercent']
+            self.state, self.message = 'manual', 'Phone heading correction'
         else:
             left, right = {'forward': (speed, speed), 'reverse': (-speed, -speed),
                            'left': (-speed, speed), 'right': (speed, -speed)}[action]

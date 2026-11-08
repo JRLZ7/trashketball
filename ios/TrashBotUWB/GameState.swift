@@ -113,6 +113,21 @@ struct MotionCommand: Codable, Equatable {
     var action: String
     var targetMeters: Int
     var speed: Int
+    var leftPercent: Int?
+    var rightPercent: Int?
+
+    init(decision: ApproachDecision, clientID: String, target: Int) {
+        self.init(client_id:clientID,sequence:0,sent_at:0,
+            action:decision.leftPercent != nil && decision.rightPercent != nil ? "drive" : decision.action,
+            targetMeters:target,speed:decision.speed,leftPercent:decision.leftPercent,rightPercent:decision.rightPercent)
+    }
+
+    init(id: String = UUID().uuidString, client_id: String, sequence: Int, sent_at: Double,
+         action: String, targetMeters: Int, speed: Int, leftPercent: Int? = nil, rightPercent: Int? = nil) {
+        self.id=id; self.client_id=client_id; self.sequence=sequence; self.sent_at=sent_at
+        self.action=action; self.targetMeters=targetMeters; self.speed=speed
+        self.leftPercent=leftPercent; self.rightPercent=rightPercent
+    }
 }
 
 struct BeamEvent: Codable, Equatable {
@@ -162,15 +177,17 @@ struct GuidanceStatus: Codable {
 // Resume requires three distinct, safe depth frames AND distinct UWB updates after the hold.
 struct GuidanceSensorHold {
     private(set) var began: TimeInterval?
+    private(set) var timeout: TimeInterval = 2
     private var stableFrames = 0
     private var lastDepth: TimeInterval?
     private var lastUWB: TimeInterval?
     mutating func reset() { self = Self() }
-    mutating func pause(at now: TimeInterval) {
-        if began == nil { began = now }
+    mutating func pause(at now: TimeInterval, timeout: TimeInterval = 2) {
+        if began == nil { began = now; self.timeout = timeout }
+        else { self.timeout = min(self.timeout,timeout) }
         stableFrames = 0; lastDepth = nil; lastUWB = nil
     }
-    func expired(at now: TimeInterval) -> Bool { began.map { now-$0 >= 2 } ?? false }
+    func expired(at now: TimeInterval) -> Bool { began.map { now-$0 >= timeout } ?? false }
     mutating func ready(depth: TimeInterval, uwb: TimeInterval) -> Bool {
         guard let began, depth > began, uwb > began else { return false }
         guard lastDepth != depth, lastUWB != uwb else { return false }
