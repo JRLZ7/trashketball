@@ -23,7 +23,7 @@ class DriverIntegrationTests(unittest.TestCase):
         Device.pin_factory = MockFactory(pin_class=MockPWMPin)
         try:
             with Drive() as drive:
-                self.assertAlmostEqual(MAX_DUTY, 150 / 255)
+                self.assertAlmostEqual(MAX_DUTY, 170 / 255)
                 controller = Controller(drive)
                 command = dict(id='mock-move', client_id='test', sequence=1, sent_at=time.time(),
                                action='forward', speed=100, targetMeters=2)
@@ -34,8 +34,8 @@ class DriverIntegrationTests(unittest.TestCase):
                 self.assertEqual(drive._left.value, 0)
                 self.assertEqual(drive._right.value, 0)
                 drive.set_motor_control(True, 999, False, 999)
-                self.assertAlmostEqual(drive._left.value, 150 / 255)
-                self.assertAlmostEqual(drive._right.value, -150 / 255)
+                self.assertAlmostEqual(drive._left.value, 170 / 255)
+                self.assertAlmostEqual(drive._right.value, -170 / 255)
                 drive.set_motor_control()
         finally:
             Device.pin_factory.close()

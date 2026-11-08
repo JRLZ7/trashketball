@@ -178,8 +178,8 @@ class ReceiverTests(unittest.TestCase):
                     self.assertAlmostEqual(reply['drive']['right'],right*100)
                     self.assertAlmostEqual(drive._left.value, left*MAX_DUTY)
                     self.assertAlmostEqual(drive._right.value, right*MAX_DUTY)
-                    self.assertLessEqual(abs(drive._left.value),150/255)
-                    self.assertLessEqual(abs(drive._right.value),150/255)
+                    self.assertLessEqual(abs(drive._left.value),170/255)
+                    self.assertLessEqual(abs(drive._right.value),170/255)
                     self.assertEqual(reply['drive']['commandID'], None if command['action'] == 'stop' else command['id'])
                 receiver.controller = Controller(drive, clock=lambda: clock[0], left_gain=.9)
                 move = {**commands[0], 'action':'drive', 'leftPercent':100, 'rightPercent':85,

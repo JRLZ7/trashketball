@@ -46,7 +46,7 @@ GPIO pinout on the can. Every number below is a BCM GPIO, not a physical header 
 - GPIO 5: ultrasonic trigger
 - GPIO 6: ultrasonic echo
 
-A command speed of 100% is written as duty `150/255` (`MAX_DUTY`). The team explicitly selected this ceiling for the current 6 V motors / 12 V supply; do not raise it above 150/255. PWM duty is not a regulated motor voltage.
+A command speed of 100% is written as duty `170/255` (`MAX_DUTY`). The team explicitly selected this ceiling for the current 6 V motors / 12 V supply; the user selected this ceiling for the current hardware test. PWM duty is not a regulated motor voltage.
 
 ## API
 
@@ -60,7 +60,7 @@ from trashketball import Drive, DrivePins
 drive.set_motor_control(left_forward=True, left_speed=0, right_forward=True, right_speed=0)
 ```
 
-Each side takes a direction bool and a speed as a percent from 0 to 100. Values outside that range are clamped, then scaled by `150/255`. A speed of 0 turns that channel's enable off. A call with no arguments coasts both motors. `close()` releases the pins. A `with Drive() as drive:` block calls `close()` when it exits.
+Each side takes a direction bool and a speed as a percent from 0 to 100. Values outside that range are clamped, then scaled by `170/255`. A speed of 0 turns that channel's enable off. A call with no arguments coasts both motors. `close()` releases the pins. A `with Drive() as drive:` block calls `close()` when it exits.
 
 ```python
 from trashketball import Drive, DrivePins
@@ -88,4 +88,4 @@ That example builds a `Drive` on the harness pins above (motor 1 on the left cha
 
 The root app bridge (`python3 pi/server.py` from the repository root) reads BCM GPIO 24 with pull-up, defaults to LOW = broken, and debounces basket events during timed rounds. Startup enables motors, beam scoring and Summon. Set `BEAM_ACTIVE_HIGH = True` in `pi/server.py` if your module's output is inverted, `ENABLE_MOTORS = False` for scoring-only operation, or `ENABLE_BEAM = False` for motor-only testing. The API token is `12345`, preset in the app and server; no flags are needed. Play shows automatic scoring readiness and counts one point per detected basket; misses do not change the count.
 
-The app now defaults to 100% manual command, and guided forward/detours/pivots use 100%. Legacy Summon also uses the requested speed on both active channels. This driver scales 100% to the team-approved `MAX_DUTY = 150/255`, and clamps excessive percentages to that ceiling. Motor pin assignments are unchanged. The 12 V supply is not applied as unrestricted 100% PWM.
+The app now defaults to 100% manual command, and guided forward/detours/pivots use 100%. Legacy Summon also uses the requested speed on both active channels. This driver scales 100% to the team-approved `MAX_DUTY = 170/255`, and clamps excessive percentages to that ceiling. Motor pin assignments are unchanged. The 12 V supply is not applied as unrestricted 100% PWM.

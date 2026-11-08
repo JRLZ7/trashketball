@@ -26,7 +26,7 @@ Example control packet:
 }
 ```
 
-Actions: `forward`, `reverse`, `left`, `right`, `summon`, `stop`, `drive`. Speed is percent of the driver's command scale (1–100 allowed); the driver further applies its existing 150/255 PWM duty cap. App manual speed is fixed at 100; all manual and guided movement requests now use 100%, including pivots. Legacy Summon uses its requested speed without the former 80/70 reductions. At 100%, each active channel reaches the 150/255 driver cap multiplied by its motor gain; stops remain zero. `targetMeters` is 1, 2 or 3. `sent_at` is Unix seconds. For motion it must be within [-1000 ms future, 1000 ms old] of the Pi clock. The app now automatically estimates Pi time from authenticated replies; matching phone/Pi wall clocks is no longer required.
+Actions: `forward`, `reverse`, `left`, `right`, `summon`, `stop`, `drive`. Speed is percent of the driver's command scale (1–100 allowed); the driver further applies its existing 170/255 PWM duty cap. App manual speed is fixed at 100; all manual and guided movement requests now use 100%, including pivots. Legacy Summon uses its requested speed without the former 80/70 reductions. At 100%, each active channel reaches the 170/255 driver cap multiplied by its motor gain; stops remain zero. `targetMeters` is 1, 2 or 3. `sent_at` is Unix seconds. For motion it must be within [-1000 ms future, 1000 ms old] of the Pi clock. The app now automatically estimates Pi time from authenticated replies; matching phone/Pi wall clocks is no longer required.
 
 A hold/Summon uses one UUID and renews it every 100 ms, with increasing sequence and a new timestamp. The Pi expires the lease after 300 ms. The app uses a separate HTTP task for control, independent of telemetry; only one renewal is outstanding. New actions get new IDs. Release/Stop uses a new ID. Any authenticated valid Stop takes precedence, including with skewed clocks or an older sequence. Completed, stopped, tracking-lost or timed-out command IDs cannot restart (bounded recent-ID cache, plus sequence ordering for the active owner). Another client cannot take over active motion; it may Stop, then issue a new command.
 
@@ -97,7 +97,7 @@ Guidance ticks every 100 ms; at most one control renewal is outstanding. Action 
 
 See [the guided approach test](guided-approach.md) for thresholds and physical limitations. Legacy Pi-side Summon is unchanged and still has no LiDAR checks.
 
-Guided output is sent from the can phone by Start guided approach; merely previewing never sends movement commands. The app card shows commanded L/R percentages from Pi replies. PWM is capped at 150/255 in the actual driver, including commands exceeding 100% passed directly to Drive (the API rejects >100).
+Guided output is sent from the can phone by Start guided approach; merely previewing never sends movement commands. The app card shows commanded L/R percentages from Pi replies. PWM is capped at 170/255 in the actual driver, including commands exceeding 100% passed directly to Drive (the API rejects >100).
 
 ## Differential wheel commands and trim
 
@@ -109,7 +109,7 @@ Guided output is sent from the can phone by Start guided approach; merely previe
 
 Use a real current `sent_at`. The `speed` field is still validated; `drive` uses the two wheel percentages directly. Changing either wheel percentage requires a new command UUID; lease renewal cannot mutate outputs. Ownership, expiry, inspection and watchdog checks are unchanged. Stop accepts the existing packet shape. `drive` remains supported for compatibility; current guidance uses full-power forward/left/right requests. Pi performs no navigation work.
 
-`LEFT_MOTOR_GAIN = 0.90`, `RIGHT_MOTOR_GAIN = 1.00` in `pi/server.py` compensate for observed rightward drift. Gains multiply every wheel request before wiring inversion and the 150/255 PWM ceiling. Status `left`/`right` includes gains. Controller construction rejects gains <=0, >1, booleans and non-finite values.
+`LEFT_MOTOR_GAIN = 0.90`, `RIGHT_MOTOR_GAIN = 1.00` in `pi/server.py` compensate for observed rightward drift. Gains multiply every wheel request before wiring inversion and the 170/255 PWM ceiling. Status `left`/`right` includes gains. Controller construction rejects gains <=0, >1, booleans and non-finite values.
 
 Missing LiDAR/AR gets a stopped recovery window of 2 s; missing UWB heading or a blocked/unobserved route gets up to 8 s. Recovery requires three new clear depth frames, fresh UWB and a confirmed zero-output Stop. Measured obstacles within 5 cm, Pi errors, watchdog timeouts and AR resets remain final stops. Switching tabs alone does not end guidance. The forward ultrasonic sensor provides no rear protection. Automatic reverse is now a bounded 15 cm/0.6 s escape burst, followed by a confirmed Stop and observed side-lane selection.
 
@@ -137,7 +137,7 @@ Update the Pi server/controller/**driver** and rebuild both phones. Test guided 
 
 ## Full-power policy and resilient phone tracking
 
-Manual and guided forward/reverse/left/right requests use speed=100. iOS no longer offers a speed slider or reduces guided pivot/forward wheel requests. The Pi's existing 0.90/1.00 motor balance gains and absolute 150/255 duty cap remain: 100% is the requested command level, not full battery voltage. No Pi deployment change is required for this iOS policy if the preceding clock/driver fixes are already installed.
+Manual and guided forward/reverse/left/right requests use speed=100. iOS no longer offers a speed slider or reduces guided pivot/forward wheel requests. The Pi's existing 0.90/1.00 motor balance gains and absolute 170/255 duty cap remain: 100% is the requested command level, not full battery voltage. No Pi deployment change is required for this iOS policy if the preceding clock/driver fixes are already installed.
 
 Heading gaps pause movement without disconnecting NI/MPC/AR. NI timeout/suspension recovery retains sessions when possible; dropped phone links restart discovery without resetting camera geometry. Transient NI invalidations retry separately from Pi control; an explicit Disconnect cancels retries. Recovery never rearms movement after a final stop. Apple can still require camera convergence after a real session interruption; stale or missing heading never authorizes motor commands.
 
